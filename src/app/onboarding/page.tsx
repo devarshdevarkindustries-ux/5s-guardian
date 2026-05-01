@@ -16,10 +16,53 @@ type PendingInviteRow = {
   accepted?: boolean | null;
 };
 
+function parseAuthHashErrors(): {
+  isExpiredOrDenied: boolean;
+  errorDescription: string | null;
+} {
+  if (typeof window === "undefined") {
+    return { isExpiredOrDenied: false, errorDescription: null };
+  }
+  const raw = window.location.hash.replace(/^#/, "");
+  if (!raw) {
+    return { isExpiredOrDenied: false, errorDescription: null };
+  }
+
+  const params = new URLSearchParams(raw);
+  const error = params.get("error");
+  const errorCode = params.get("error_code");
+  const descRaw = params.get("error_description");
+
+  const lower = raw.toLowerCase();
+  const isExpiredOrDenied =
+    errorCode === "otp_expired" ||
+    error === "access_denied" ||
+    lower.includes("otp_expired") ||
+    lower.includes("access_denied");
+
+  let errorDescription: string | null = null;
+  if (descRaw) {
+    try {
+      errorDescription = decodeURIComponent(descRaw.replace(/\+/g, " "));
+    } catch {
+      errorDescription = descRaw;
+    }
+  }
+
+  return { isExpiredOrDenied, errorDescription };
+}
+
+const EXPIRED_INVITE_MESSAGE =
+  "This invite link has expired. Invite links are valid for 24 hours. Please ask your administrator to send a new invite.";
+
 export default function OnboardingPage() {
   const router = useRouter();
   const [phase, setPhase] = useState<"loading" | "form" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
+  const [inviteLinkExpired, setInviteLinkExpired] = useState(false);
+  const [hashErrorDescription, setHashErrorDescription] = useState<string | null>(
+    null,
+  );
 
   const [userId, setUserId] = useState<string | null>(null);
   const [email, setEmail] = useState("");
@@ -32,6 +75,22 @@ export default function OnboardingPage() {
     let cancelled = false;
 
     (async () => {
+      const { isExpiredOrDenied, errorDescription } = parseAuthHashErrors();
+      if (isExpiredOrDenied) {
+        setInviteLinkExpired(true);
+        setHashErrorDescription(errorDescription);
+        setError(EXPIRED_INVITE_MESSAGE);
+        setPhase("error");
+        if (typeof window !== "undefined") {
+          window.history.replaceState(
+            null,
+            "",
+            `${window.location.pathname}${window.location.search}`,
+          );
+        }
+        return;
+      }
+
       let authUser: { id: string; email?: string | null } | null = null;
 
       const {
@@ -221,15 +280,28 @@ export default function OnboardingPage() {
           ) : phase === "error" ? (
             <>
               <h1 className="text-xl font-semibold text-zinc-900">
-                Can&apos;t continue onboarding
+                {inviteLinkExpired ? "Link no longer valid" : "Can't continue onboarding"}
               </h1>
-              <p className="mt-2 text-sm text-rose-700">{error}</p>
+              <p
+                className={
+                  inviteLinkExpired
+                    ? "mt-3 text-sm leading-relaxed text-zinc-700"
+                    : "mt-2 text-sm text-rose-700"
+                }
+              >
+                {error}
+              </p>
+              {inviteLinkExpired && hashErrorDescription ? (
+                <p className="mt-3 text-xs leading-relaxed text-zinc-500">
+                  {hashErrorDescription}
+                </p>
+              ) : null}
               <button
                 type="button"
                 onClick={() => router.replace("/login")}
                 className="mt-6 inline-flex min-h-12 w-full items-center justify-center rounded-2xl bg-zinc-900 px-5 text-sm font-semibold text-white hover:bg-zinc-800"
               >
-                Go to sign in
+                Go to login
               </button>
             </>
           ) : (
