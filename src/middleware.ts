@@ -13,6 +13,14 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next()
   }
 
+  // PKCE / OAuth callbacks often land on `/` with `?code=...` — send users to onboarding
+  // so the client can finish the exchange without role-based middleware blocking.
+  if (pathname === '/' && request.nextUrl.searchParams.has('code')) {
+    const url = request.nextUrl.clone()
+    url.pathname = '/onboarding'
+    return NextResponse.redirect(url)
+  }
+
   let response = NextResponse.next()
 
   const supabase = createServerClient(
@@ -65,6 +73,7 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
+    '/',
     '/((?!_next/static|_next/image|favicon.ico|api).*)',
   ],
 }

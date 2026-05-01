@@ -496,32 +496,24 @@ export default function AdminPage() {
     try {
       const email = userForm.email.trim().toLowerCase();
 
-      const invitePayload: Record<string, string | null> = {
-        email,
-        full_name: userForm.full_name.trim(),
-        role: userForm.role,
-        org_id: state.profile.org_id,
-        plant_id: state.profile.plant_id,
-      };
-      if (userForm.role === "zone_leader" && userForm.zone_id) {
-        invitePayload.zone_id = userForm.zone_id;
-      }
-
-      const { error: inviteErr } = await supabase.from("pending_invites").insert(invitePayload);
-      if (inviteErr) throw new Error(inviteErr.message);
-
-      console.log("Sending OTP to:", email);
-      const { error: otpError } = await supabase.auth.signInWithOtp({
-        email,
-        options: {
-          emailRedirectTo: `${window.location.origin}/onboarding`,
-          shouldCreateUser: true,
-        },
+      const res = await fetch("/api/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email,
+          fullName: userForm.full_name.trim(),
+          role: userForm.role,
+          orgId: state.profile.org_id,
+          plantId: state.profile.plant_id,
+          zoneId:
+            userForm.role === "zone_leader" && userForm.zone_id
+              ? userForm.zone_id
+              : null,
+        }),
       });
-      if (otpError) {
-        console.error("OTP error:", otpError);
-        setBanner(`Failed to send invite: ${otpError.message}`);
-        return;
+      const data = (await res.json()) as { success?: boolean; error?: string };
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? "Invite failed");
       }
 
       setBanner(`Invite sent to ${email}`);

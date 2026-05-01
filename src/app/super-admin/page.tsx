@@ -291,28 +291,20 @@ export default function SuperAdminPage() {
     setInviting(true);
     try {
       const email = inviteEmail.trim().toLowerCase();
-      const fullName = inviteName.trim() || null;
 
-      const { error: inviteErr } = await supabase.from("pending_invites").insert({
-        email,
-        full_name: fullName,
-        role: "admin",
-        org_id: createdOrg.id,
+      const res = await fetch("/api/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email,
+          fullName: inviteName.trim() || "",
+          role: "admin",
+          orgId: createdOrg.id,
+        }),
       });
-      if (inviteErr) throw new Error(inviteErr.message);
-
-      console.log("Sending OTP to:", email);
-      const { error: otpError } = await supabase.auth.signInWithOtp({
-        email,
-        options: {
-          emailRedirectTo: `${window.location.origin}/onboarding`,
-          shouldCreateUser: true,
-        },
-      });
-      if (otpError) {
-        console.error("OTP error:", otpError);
-        setBanner(`Failed to send invite: ${otpError.message}`);
-        return;
+      const data = (await res.json()) as { success?: boolean; error?: string };
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? "Invite failed");
       }
 
       setBanner(`Invite sent to ${email}`);
