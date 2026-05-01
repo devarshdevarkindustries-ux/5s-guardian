@@ -510,13 +510,19 @@ export default function AdminPage() {
       const { error: inviteErr } = await supabase.from("pending_invites").insert(invitePayload);
       if (inviteErr) throw new Error(inviteErr.message);
 
-      const { error: otpErr } = await supabase.auth.signInWithOtp({
+      console.log("Sending OTP to:", email);
+      const { error: otpError } = await supabase.auth.signInWithOtp({
         email,
         options: {
           emailRedirectTo: `${window.location.origin}/onboarding`,
+          shouldCreateUser: true,
         },
       });
-      if (otpErr) throw new Error(otpErr.message);
+      if (otpError) {
+        console.error("OTP error:", otpError);
+        setBanner(`Failed to send invite: ${otpError.message}`);
+        return;
+      }
 
       setBanner(`Invite sent to ${email}`);
       setUserAddOpen(false);
