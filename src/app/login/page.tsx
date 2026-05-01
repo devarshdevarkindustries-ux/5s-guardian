@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
+import { getCurrentUser, getRoleHomeRoute } from "@/lib/auth";
 
 const supabase = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -28,12 +29,18 @@ export default function LoginPage() {
 
       if (signInError) throw new Error(signInError.message);
 
-      router.refresh();
-      router.push("/dashboard");
+      const profile = await getCurrentUser();
+      if (!profile) {
+        setError("Account not set up. Contact your administrator.");
+        return;
+      }
 
+      const home = getRoleHomeRoute(profile.role);
+      router.refresh();
+      router.push(home);
       setTimeout(() => {
-        window.location.replace("/dashboard");
-      }, 500);
+        window.location.replace(home);
+      }, 300);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.log("Sign in failed:", err);
