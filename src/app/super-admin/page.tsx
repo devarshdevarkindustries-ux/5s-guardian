@@ -16,6 +16,7 @@ type OrganisationRow = {
 type PlantRow = {
   id: string;
   name: string | null;
+  location: string | null;
   org_id: string | null;
 };
 
@@ -51,12 +52,9 @@ type LoadState =
 
 function slugify(input: string) {
   return input
-    .trim()
     .toLowerCase()
-    .replace(/['"]/g, "")
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 64);
+    .replace(/^-|-$/g, "");
 }
 
 function Toggle({
@@ -148,6 +146,51 @@ export default function SuperAdminPage() {
 
   const [banner, setBanner] = useState<string | null>(null);
 
+  async function refreshAll() {
+    const [orgsCount, plantsCount, usersCount, auditsCount, orgsRes, plantsRes, usersRes] =
+      await Promise.all([
+        supabase.from("organisations").select("id", { count: "exact", head: true }),
+        supabase.from("plants").select("id", { count: "exact", head: true }),
+        supabase.from("user_profiles").select("id", { count: "exact", head: true }),
+        supabase.from("audit_sessions").select("id", { count: "exact", head: true }),
+        supabase
+          .from("organisations")
+          .select("id,name,slug,is_active,created_at")
+          .order("created_at", { ascending: true }),
+        supabase
+          .from("plants")
+          .select("id,name,location,org_id")
+          .order("name", { ascending: true }),
+        supabase
+          .from("user_profiles")
+          .select("id,full_name,role,org_id,plant_id,is_active")
+          .order("full_name", { ascending: true }),
+      ]);
+
+    const firstErr =
+      orgsCount.error ??
+      plantsCount.error ??
+      usersCount.error ??
+      auditsCount.error ??
+      orgsRes.error ??
+      plantsRes.error ??
+      usersRes.error;
+    if (firstErr) throw new Error(firstErr.message);
+
+    setState({
+      status: "ready",
+      stats: {
+        orgs: orgsCount.count ?? 0,
+        plants: plantsCount.count ?? 0,
+        users: usersCount.count ?? 0,
+        audits: auditsCount.count ?? 0,
+      },
+      organisations: (orgsRes.data ?? []) as OrganisationRow[],
+      plants: (plantsRes.data ?? []) as PlantRow[],
+      users: (usersRes.data ?? []) as UserProfileRow[],
+    });
+  }
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -157,51 +200,15 @@ export default function SuperAdminPage() {
         return;
       }
 
-      const [orgsCount, plantsCount, usersCount, auditsCount, orgsRes, plantsRes, usersRes] =
-        await Promise.all([
-          supabase.from("organisations").select("id", { count: "exact", head: true }),
-          supabase.from("plants").select("id", { count: "exact", head: true }),
-          supabase.from("user_profiles").select("id", { count: "exact", head: true }),
-          supabase.from("audit_sessions").select("id", { count: "exact", head: true }),
-          supabase
-            .from("organisations")
-            .select("id,name,slug,is_active,created_at")
-            .order("created_at", { ascending: false }),
-          supabase.from("plants").select("id,name,org_id").order("name", { ascending: true }),
-          supabase
-            .from("user_profiles")
-            .select("id,full_name,role,org_id,plant_id,is_active")
-            .order("full_name", { ascending: true }),
-        ]);
-
-      if (cancelled) return;
-
-      const firstErr =
-        orgsCount.error ??
-        plantsCount.error ??
-        usersCount.error ??
-        auditsCount.error ??
-        orgsRes.error ??
-        plantsRes.error ??
-        usersRes.error;
-
-      if (firstErr) {
-        setState({ status: "error", message: firstErr.message });
-        return;
+      try {
+        await refreshAll();
+      } catch (e) {
+        if (cancelled) return;
+        setState({
+          status: "error",
+          message: e instanceof Error ? e.message : "Failed to load portal.",
+        });
       }
-
-      setState({
-        status: "ready",
-        stats: {
-          orgs: orgsCount.count ?? 0,
-          plants: plantsCount.count ?? 0,
-          users: usersCount.count ?? 0,
-          audits: auditsCount.count ?? 0,
-        },
-        organisations: (orgsRes.data ?? []) as OrganisationRow[],
-        plants: (plantsRes.data ?? []) as PlantRow[],
-        users: (usersRes.data ?? []) as UserProfileRow[],
-      });
     })();
 
     return () => {
@@ -286,11 +293,7 @@ export default function SuperAdminPage() {
       const inserted = data as OrganisationRow;
       setCreatedOrg(inserted);
       setBanner(`Organisation created: ${inserted.name ?? "Organisation"}`);
-
-      setState((s) => {
-        if (s.status !== "ready") return s;
-        return { ...s, organisations: [inserted, ...s.organisations] };
-      });
+      await refreshAll();
     } catch (e) {
       setBanner(e instanceof Error ? e.message : "Failed to create organisation.");
     } finally {
@@ -306,23 +309,35 @@ export default function SuperAdminPage() {
       const email = inviteEmail.trim().toLowerCase();
       const fullName = inviteName.trim() || null;
 
-      const slug = createdOrg.slug ?? slugify(createdOrg.name ?? "org");
-
       const { error: inviteErr } = await supabase.from("pending_invites").insert({
         email,
         full_name: fullName,
-        org_id: createdOrg.id,
         role: "admin",
-        slug,
+        org_id: createdOrg.id,
       });
       if (inviteErr) throw new Error(inviteErr.message);
 
       const { error: otpErr } = await supabase.auth.signInWithOtp({ email });
       if (otpErr) throw new Error(otpErr.message);
 
-      setBanner(`Invite created. Send invite link to ${email}.`);
+      const userId =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random()}`;
+      const { error: profileErr } = await supabase.from("user_profiles").insert({
+        id: userId,
+        full_name: fullName,
+        role: "admin",
+        org_id: createdOrg.id,
+        is_active: true,
+      });
+      if (profileErr) throw new Error(profileErr.message);
+
+      setBanner(`Invite sent to ${email}`);
       setInviteEmail("");
       setInviteName("");
+
+      await refreshAll();
     } catch (e) {
       setBanner(e instanceof Error ? e.message : "Failed to invite admin user.");
     } finally {
@@ -544,12 +559,14 @@ export default function SuperAdminPage() {
                                 key={p.id}
                                 className="flex items-center justify-between rounded-xl bg-zinc-50 px-3 py-2"
                               >
-                                <span className="text-sm font-semibold text-zinc-900">
-                                  {p.name ?? "Unnamed plant"}
-                                </span>
-                                <span className="text-xs font-mono text-zinc-500">
-                                  {p.id}
-                                </span>
+                                <div className="min-w-0">
+                                  <div className="truncate text-sm font-semibold text-zinc-900">
+                                    {p.name ?? "Unnamed plant"}
+                                  </div>
+                                  <div className="truncate text-xs text-zinc-500">
+                                    {p.location ?? "Location not set"}
+                                  </div>
+                                </div>
                               </li>
                             ))}
                           </ul>
