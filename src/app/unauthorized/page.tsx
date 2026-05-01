@@ -12,7 +12,7 @@ export default function UnauthorizedPage() {
     (async () => {
       const user = await getCurrentUser();
       if (cancelled) return;
-      setHome(getRoleHomeRoute(user?.role ?? "login"));
+      setHome(getRoleHomeRoute(user?.role));
     })();
     return () => {
       cancelled = true;

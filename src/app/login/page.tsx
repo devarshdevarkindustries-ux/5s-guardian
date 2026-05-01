@@ -30,12 +30,9 @@ export default function LoginPage() {
       if (signInError) throw new Error(signInError.message);
 
       const profile = await getCurrentUser();
-      if (!profile) {
-        setError("Account not set up. Contact your administrator.");
-        return;
-      }
-
-      const home = getRoleHomeRoute(profile.role);
+      const home = profile
+        ? getRoleHomeRoute(profile.role)
+        : "/onboarding";
       router.refresh();
       router.push(home);
       setTimeout(() => {

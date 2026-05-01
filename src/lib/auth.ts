@@ -2,7 +2,13 @@ import { createBrowserClient } from '@supabase/ssr'
 
 const supabase = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  {
+    auth: {
+      detectSessionInUrl: true,
+      flowType: 'pkce',
+    },
+  },
 )
 
 export type UserProfile = {
@@ -33,7 +39,7 @@ export async function getCurrentUser(): Promise<UserProfile | null> {
       plants(name)
     `)
     .eq('id', user.id)
-    .single()
+    .maybeSingle()
 
   if (!profile) return null
 
@@ -49,14 +55,15 @@ export async function getCurrentUser(): Promise<UserProfile | null> {
   }
 }
 
-export function getRoleHomeRoute(role: string): string {
+export function getRoleHomeRoute(role: string | null | undefined): string {
+  if (!role) return '/onboarding'
   switch (role) {
     case 'super_admin': return '/super-admin'
     case 'admin': return '/admin'
     case 'auditor': return '/auditor'
     case 'zone_leader': return '/dashboard'
     case 'supervisor': return '/dashboard'
-    default: return '/login'
+    default: return '/onboarding'
   }
 }
 

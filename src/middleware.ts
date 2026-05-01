@@ -1,8 +1,6 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
-const PUBLIC_PATHS = new Set(['/login', '/onboarding'])
-
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
@@ -12,11 +10,6 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/api') ||
     pathname === '/favicon.ico'
   ) {
-    return NextResponse.next()
-  }
-
-  // Public paths (no auth required)
-  if (PUBLIC_PATHS.has(pathname)) {
     return NextResponse.next()
   }
 
@@ -43,16 +36,29 @@ export async function middleware(request: NextRequest) {
 
   const { data: { user } } = await supabase.auth.getUser()
 
+  const publicAuthPaths = pathname === '/login' || pathname === '/onboarding'
+
   if (!user) {
+    if (publicAuthPaths) {
+      return response
+    }
     return NextResponse.redirect(new URL('/login', request.url))
   }
 
-  // Important: do not redirect logged-in users away from any valid route.
-  // Role-based access/redirects are handled inside client pages via `getCurrentUser()`.
-  // Explicitly allow these routes to exist in-app:
-  // - /super-admin
-  // - /auditor
-  // - /unauthorized
+  // Authenticated users can always complete onboarding (even before user_profiles exists)
+  if (pathname === '/onboarding') {
+    return response
+  }
+
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('id')
+    .eq('id', user.id)
+    .maybeSingle()
+
+  if (!profile) {
+    return NextResponse.redirect(new URL('/onboarding', request.url))
+  }
 
   return response
 }

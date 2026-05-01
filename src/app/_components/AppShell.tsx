@@ -21,7 +21,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
   );
 
-  const showChrome = pathname !== "/login";
+  const showChrome = pathname !== "/login" && pathname !== "/onboarding";
 
   const activeHref = useMemo(() => {
     if (!pathname) return "";

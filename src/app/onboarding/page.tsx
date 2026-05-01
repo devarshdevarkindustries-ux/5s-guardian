@@ -32,22 +32,31 @@ export default function OnboardingPage() {
     let cancelled = false;
 
     (async () => {
+      let authUser: { id: string; email?: string | null } | null = null;
+
       const {
         data: { session },
       } = await supabase.auth.getSession();
 
       if (cancelled) return;
 
-      if (!session?.user) {
-        setPhase("error");
-        setError(
-          "No active session. Open this page from the magic link in your invite email, or sign in from the login page.",
-        );
-        return;
+      if (session?.user) {
+        authUser = session.user;
+      } else {
+        const { data: userData, error: userErr } = await supabase.auth.getUser();
+        if (cancelled) return;
+        if (userErr || !userData.user) {
+          setPhase("error");
+          setError(
+            "No active session yet. If you just opened your invite link, wait a moment and refresh — or open this page from the magic link in your email.",
+          );
+          return;
+        }
+        authUser = userData.user;
       }
 
-      const uid = session.user.id;
-      const userEmail = session.user.email ?? "";
+      const uid = authUser.id;
+      const userEmail = authUser.email ?? "";
       setUserId(uid);
       setEmail(userEmail);
 

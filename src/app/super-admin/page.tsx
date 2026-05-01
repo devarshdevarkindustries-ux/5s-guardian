@@ -233,11 +233,6 @@ export default function SuperAdminPage() {
     return { plantCountByOrg, userCountByOrg, plantsByOrg };
   }, [state]);
 
-  async function logout() {
-    await supabase.auth.signOut();
-    router.replace("/login");
-  }
-
   async function toggleOrgActive(org: OrganisationRow) {
     if (state.status !== "ready") return;
     const next = !(org.is_active ?? true);
@@ -393,13 +388,6 @@ export default function SuperAdminPage() {
               className="inline-flex min-h-12 items-center justify-center rounded-xl bg-indigo-600 px-5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 active:scale-[0.99]"
             >
               Add New Organisation
-            </button>
-            <button
-              type="button"
-              onClick={() => void logout()}
-              className="inline-flex min-h-12 items-center justify-center rounded-xl border border-zinc-200 bg-white px-5 text-sm font-semibold text-zinc-900 shadow-sm hover:bg-zinc-50 active:scale-[0.99]"
-            >
-              Logout
             </button>
           </div>
         </header>
