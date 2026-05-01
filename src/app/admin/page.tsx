@@ -496,52 +496,29 @@ export default function AdminPage() {
     try {
       const email = userForm.email.trim().toLowerCase();
 
-      const { error: inviteErr } = await supabase.from("pending_invites").insert({
+      const invitePayload: Record<string, string | null> = {
         email,
         full_name: userForm.full_name.trim(),
         role: userForm.role,
         org_id: state.profile.org_id,
-      });
-      if (inviteErr) throw new Error(inviteErr.message);
-
-      const { error: otpErr } = await supabase.auth.signInWithOtp({ email });
-      if (otpErr) throw new Error(otpErr.message);
-
-      const newId =
-        typeof crypto !== "undefined" && "randomUUID" in crypto
-          ? crypto.randomUUID()
-          : `${Date.now()}-${Math.random()}`;
-
-      const insert: Partial<UserProfileRow> & { id: string } = {
-        id: newId,
-        full_name: userForm.full_name.trim(),
-        role: userForm.role,
-        org_id: state.profile.org_id,
         plant_id: state.profile.plant_id,
-        is_active: true,
       };
-
-      const { error: profileErr } = await supabase.from("user_profiles").insert(insert);
-      if (profileErr) throw new Error(profileErr.message);
-
       if (userForm.role === "zone_leader" && userForm.zone_id) {
-        const { error: zoneErr } = await supabase
-          .from("zones")
-          .update({ leader_id: newId })
-          .eq("id", userForm.zone_id);
-        if (zoneErr) throw new Error(zoneErr.message);
+        invitePayload.zone_id = userForm.zone_id;
       }
 
-      setBanner(`Invite sent to ${email}`);
-      setState((s) => {
-        if (s.status !== "ready") return s;
-        const nowIso = new Date().toISOString();
-        const nextUsers: UserProfileRow[] = [
-          { ...(insert as UserProfileRow), created_at: nowIso },
-          ...s.users,
-        ];
-        return { ...s, users: nextUsers, stats: { ...s.stats, users: s.stats.users + 1 } };
+      const { error: inviteErr } = await supabase.from("pending_invites").insert(invitePayload);
+      if (inviteErr) throw new Error(inviteErr.message);
+
+      const { error: otpErr } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: `${window.location.origin}/onboarding`,
+        },
       });
+      if (otpErr) throw new Error(otpErr.message);
+
+      setBanner(`Invite sent to ${email}`);
       setUserAddOpen(false);
       setUserForm({ full_name: "", email: "", role: "auditor", zone_id: "" });
     } catch (e) {

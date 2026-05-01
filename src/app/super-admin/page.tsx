@@ -50,13 +50,6 @@ type LoadState =
       users: UserProfileRow[];
     };
 
-function slugify(input: string) {
-  return input
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
-}
-
 function Toggle({
   on,
   onClick,
@@ -137,6 +130,8 @@ export default function SuperAdminPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [orgName, setOrgName] = useState("");
   const [orgSlug, setOrgSlug] = useState("");
+  /** Once true, slug is manual-only (still synced when user clears slug input). */
+  const [slugTouched, setSlugTouched] = useState(false);
   const [creatingOrg, setCreatingOrg] = useState(false);
 
   const [createdOrg, setCreatedOrg] = useState<OrganisationRow | null>(null);
@@ -215,12 +210,6 @@ export default function SuperAdminPage() {
       cancelled = true;
     };
   }, [router]);
-
-  useEffect(() => {
-    const next = slugify(orgName);
-    setOrgSlug((s) => (s ? s : next));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orgName]);
 
   const aggregates = useMemo(() => {
     if (state.status !== "ready") return null;
@@ -317,21 +306,13 @@ export default function SuperAdminPage() {
       });
       if (inviteErr) throw new Error(inviteErr.message);
 
-      const { error: otpErr } = await supabase.auth.signInWithOtp({ email });
-      if (otpErr) throw new Error(otpErr.message);
-
-      const userId =
-        typeof crypto !== "undefined" && "randomUUID" in crypto
-          ? crypto.randomUUID()
-          : `${Date.now()}-${Math.random()}`;
-      const { error: profileErr } = await supabase.from("user_profiles").insert({
-        id: userId,
-        full_name: fullName,
-        role: "admin",
-        org_id: createdOrg.id,
-        is_active: true,
+      const { error: otpErr } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: `${window.location.origin}/onboarding`,
+        },
       });
-      if (profileErr) throw new Error(profileErr.message);
+      if (otpErr) throw new Error(otpErr.message);
 
       setBanner(`Invite sent to ${email}`);
       setInviteEmail("");
@@ -400,7 +381,15 @@ export default function SuperAdminPage() {
           <div className="flex flex-col items-stretch gap-2 sm:items-end">
             <button
               type="button"
-              onClick={() => setAddOpen(true)}
+              onClick={() => {
+                setCreatedOrg(null);
+                setOrgName("");
+                setOrgSlug("");
+                setSlugTouched(false);
+                setInviteName("");
+                setInviteEmail("");
+                setAddOpen(true);
+              }}
               className="inline-flex min-h-12 items-center justify-center rounded-xl bg-indigo-600 px-5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 active:scale-[0.99]"
             >
               Add New Organisation
@@ -589,6 +578,7 @@ export default function SuperAdminPage() {
           setCreatedOrg(null);
           setOrgName("");
           setOrgSlug("");
+          setSlugTouched(false);
           setInviteName("");
           setInviteEmail("");
         }}
@@ -601,16 +591,31 @@ export default function SuperAdminPage() {
               </label>
               <input
                 value={orgName}
-                onChange={(e) => setOrgName(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setOrgName(val);
+                  if (!slugTouched) {
+                    setOrgSlug(
+                      val
+                        .toLowerCase()
+                        .replace(/[^a-z0-9]+/g, "-")
+                        .replace(/^-|-$/g, ""),
+                    );
+                  }
+                }}
                 className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
                 placeholder="Acme Manufacturing"
+                autoComplete="organization"
               />
             </div>
             <div>
               <label className="text-sm font-semibold text-zinc-700">Slug</label>
               <input
                 value={orgSlug}
-                onChange={(e) => setOrgSlug(e.target.value)}
+                onChange={(e) => {
+                  setSlugTouched(true);
+                  setOrgSlug(e.target.value);
+                }}
                 className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
                 placeholder="acme-manufacturing"
               />
@@ -641,9 +646,10 @@ export default function SuperAdminPage() {
                 Create Admin User
               </div>
               <div className="mt-1 text-sm text-zinc-600">
-                We can’t call the Supabase Admin API from the browser. Instead,
-                this creates a record in <span className="font-mono">pending_invites</span>{" "}
-                and sends a magic link.
+                We store the invite in{" "}
+                <span className="font-mono">pending_invites</span>, send a magic link,
+                and create the <span className="font-mono">user_profiles</span> row after
+                they sign in.
               </div>
             </div>
 
