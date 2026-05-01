@@ -446,6 +446,30 @@ export default function AuditPage() {
   const item = view?.item;
   const existing = view?.existing;
 
+  if (!item) {
+    return (
+      <div className={pageShell}>
+        <div className={cardShell}>
+          <div className="text-lg font-semibold text-zinc-900">
+            Question unavailable
+          </div>
+          <div className="mt-2 text-sm text-zinc-600">
+            The current step doesn&apos;t match any audit question. Return to the
+            dashboard and start again.
+          </div>
+          <div className="mt-6">
+            <Link
+              href="/dashboard"
+              className="inline-flex min-h-12 w-full items-center justify-center rounded-2xl bg-zinc-900 px-5 text-base font-semibold text-white"
+            >
+              Back to Dashboard
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const total = items.length;
   const current = index + 1;
   const progress = clamp(current / total, 0, 1);

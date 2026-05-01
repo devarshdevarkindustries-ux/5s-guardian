@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useMemo } from "react";
-import supabase from "@/lib/supabase";
+import { createBrowserClient } from "@supabase/ssr";
 
 const NAV = [
   { href: "/dashboard", label: "Home", icon: "🏠" },
@@ -16,6 +16,10 @@ const NAV = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const supabase = createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  );
 
   const showChrome = pathname !== "/login";
 
