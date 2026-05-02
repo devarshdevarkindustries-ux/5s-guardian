@@ -159,12 +159,21 @@ function roleBadgeClass(role: string) {
     case "auditor":
       return "bg-amber-50 text-amber-800 ring-amber-200";
     case "zone_leader":
-      return "bg-teal-50 text-teal-700 ring-teal-200";
+      return "bg-teal-100 text-teal-900 ring-teal-400";
     case "supervisor":
       return "bg-rose-50 text-rose-700 ring-rose-200";
     default:
       return "bg-zinc-100 text-zinc-700 ring-zinc-200";
   }
+}
+
+function formatRoleLabel(role: string) {
+  const r = role.toLowerCase();
+  if (r === "zone_leader") return "Zone Leader";
+  if (r === "admin") return "Admin";
+  if (r === "auditor") return "Auditor";
+  if (r === "supervisor") return "Supervisor";
+  return role;
 }
 
 function Modal({
@@ -309,7 +318,7 @@ export default function AdminPage() {
         supabase
           .from("user_profiles")
           .select("id", { count: "exact", head: true })
-          .eq("plant_id", plantId),
+          .or(`plant_id.eq.${plantId},id.eq.${user.id}`),
         supabase
           .from("audit_sessions")
           .select("id", { count: "exact", head: true })
@@ -330,7 +339,7 @@ export default function AdminPage() {
         supabase
           .from("user_profiles")
           .select("id,full_name,role,org_id,plant_id,is_active,created_at")
-          .eq("plant_id", plantId)
+          .or(`plant_id.eq.${plantId},id.eq.${user.id}`)
           .order("created_at", { ascending: false }),
         supabase
           .from("audit_sessions")
@@ -717,7 +726,9 @@ export default function AdminPage() {
       const usersRes = await supabase
         .from("user_profiles")
         .select("id,full_name,role,org_id,plant_id,is_active,created_at")
-        .eq("plant_id", state.profile.plant_id)
+        .or(
+          `plant_id.eq.${state.profile.plant_id},id.eq.${state.profile.id}`,
+        )
         .order("created_at", { ascending: false });
       const zonesRes = await supabase
         .from("zones")
@@ -891,13 +902,6 @@ export default function AdminPage() {
               >
                 Add Another Plant
               </button>
-              <button
-                type="button"
-                onClick={() => void logout()}
-                className="inline-flex min-h-12 items-center justify-center rounded-xl border border-zinc-200 bg-white px-5 text-sm font-semibold text-zinc-900 shadow-sm hover:bg-zinc-50 active:scale-[0.99]"
-              >
-                Logout
-              </button>
             </div>
           </div>
         </header>
@@ -1053,7 +1057,7 @@ export default function AdminPage() {
                           </td>
                           <td className="px-4 py-3">
                             <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${roleBadgeClass(role)}`}>
-                              {role}
+                              {formatRoleLabel(role)}
                             </span>
                           </td>
                           <td className="px-4 py-3 text-zinc-700">{zone}</td>
