@@ -239,7 +239,15 @@ export default function AuditPage() {
           return;
         }
 
-        setAuditorZoneId(list[0]?.id ?? null);
+        const zoneFromUrl =
+          typeof window !== "undefined"
+            ? new URLSearchParams(window.location.search).get("zone")
+            : null;
+        const pick =
+          zoneFromUrl && list.some((z) => z.id === zoneFromUrl)
+            ? zoneFromUrl
+            : (list[0]?.id ?? null);
+        setAuditorZoneId(pick);
         setState({ status: "select_zone", profile, zones: list });
         return;
       }

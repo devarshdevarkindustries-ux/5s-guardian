@@ -938,7 +938,7 @@ export default function AdminPage() {
         </section>
 
         {/* SECTION 3 — Zone Management */}
-        <section aria-label="Zones">
+        <section id="admin-zones" aria-label="Zones">
           <div className="mb-4 flex items-end justify-between gap-2">
             <h2 className="text-lg font-semibold text-zinc-900">Zones</h2>
             <button
