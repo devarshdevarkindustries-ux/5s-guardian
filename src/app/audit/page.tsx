@@ -1,15 +1,11 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import supabase from "@/lib/supabase";
-
-type ZoneLeader = {
-  id: string;
-  name: string | null;
-  zone_id: string | null;
-  zones?: { name: string | null } | { name: string | null }[] | null;
-};
+import { getCurrentUser, getRoleHomeRoute } from "@/lib/auth";
+import type { UserProfile } from "@/lib/auth";
 
 type AuditTemplate = {
   id: string;
@@ -19,15 +15,17 @@ type AuditTemplate = {
 
 type AuditItem = {
   id: string;
-  pillar:
-    | "Sort"
-    | "Set"
-    | "Shine"
-    | "Standardise"
-    | "Sustain"
-    | "Safety"
-    | string;
+  pillar: string;
   text: string;
+};
+
+type ZoneRow = {
+  id: string;
+  name: string | null;
+  department: string | null;
+  org_id: string | null;
+  plant_id: string | null;
+  audit_frequency: string | null;
 };
 
 type ResponseDraft = {
@@ -39,10 +37,16 @@ type ResponseDraft = {
 
 type ScreenState =
   | { status: "loading" }
-  | { status: "error"; message: string }
+  | { status: "error"; message: string; homeHref: string }
+  | {
+      status: "select_zone";
+      profile: UserProfile;
+      zones: ZoneRow[];
+    }
   | {
       status: "in_progress";
-      leader: ZoneLeader;
+      profile: UserProfile;
+      zone: ZoneRow;
       template: AuditTemplate;
       items: AuditItem[];
       index: number;
@@ -50,7 +54,8 @@ type ScreenState =
     }
   | {
       status: "submitting";
-      leader: ZoneLeader;
+      profile: UserProfile;
+      zone: ZoneRow;
       template: AuditTemplate;
       items: AuditItem[];
       answers: Record<string, ResponseDraft>;
@@ -59,20 +64,27 @@ type ScreenState =
       status: "done";
       score: number;
       xpEarned: number;
-      photosUploaded: number;
       breakdown: Record<string, { earned: number; max: number }>;
+      profile: UserProfile;
     };
 
-function getZoneName(leader: ZoneLeader) {
-  const zones = leader.zones;
-  if (!zones) return null;
-  if (Array.isArray(zones)) return zones[0]?.name ?? null;
-  return zones.name ?? null;
-}
+const PILLAR_MAX: Record<string, number> = {
+  Sort: 28,
+  Set: 44,
+  Shine: 44,
+  Standardise: 44,
+  Sustain: 36,
+  Safety: 36,
+};
 
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
-}
+const PILLAR_ORDER = [
+  "Sort",
+  "Set",
+  "Shine",
+  "Standardise",
+  "Sustain",
+  "Safety",
+] as const;
 
 function parseItems(items: unknown): AuditItem[] {
   if (Array.isArray(items)) {
@@ -87,7 +99,6 @@ function parseItems(items: unknown): AuditItem[] {
       })
       .filter((i) => i.id && i.text);
   }
-
   if (typeof items === "string") {
     try {
       return parseItems(JSON.parse(items));
@@ -95,26 +106,25 @@ function parseItems(items: unknown): AuditItem[] {
       return [];
     }
   }
-
   return [];
 }
 
-function pillarPillClass(pillar: string) {
+function pillarBadgeClass(pillar: string) {
   switch (pillar) {
     case "Sort":
-      return "bg-blue-50 text-blue-700 ring-blue-200";
+      return "bg-blue-50 text-blue-800 ring-blue-300";
     case "Set":
-      return "bg-emerald-50 text-emerald-700 ring-emerald-200";
+      return "bg-emerald-50 text-emerald-900 ring-emerald-300";
     case "Shine":
-      return "bg-yellow-50 text-yellow-800 ring-yellow-200";
+      return "bg-yellow-50 text-yellow-900 ring-yellow-300";
     case "Standardise":
-      return "bg-purple-50 text-purple-700 ring-purple-200";
+      return "bg-purple-50 text-purple-900 ring-purple-300";
     case "Sustain":
-      return "bg-orange-50 text-orange-700 ring-orange-200";
+      return "bg-orange-50 text-orange-900 ring-orange-300";
     case "Safety":
-      return "bg-rose-50 text-rose-700 ring-rose-200";
+      return "bg-red-50 text-red-800 ring-red-300";
     default:
-      return "bg-zinc-100 text-zinc-700 ring-zinc-200";
+      return "bg-zinc-100 text-zinc-700 ring-zinc-300";
   }
 }
 
@@ -138,12 +148,29 @@ function extFromMimeOrName(file: File) {
   return "jpg";
 }
 
+function addDays(isoOrDate: Date, days: number) {
+  const d = new Date(isoOrDate);
+  d.setDate(d.getDate() + days);
+  return d;
+}
+
+function nextAuditDueFromToday(freq: string | null) {
+  const base = new Date();
+  base.setHours(0, 0, 0, 0);
+  const f = (freq ?? "daily").toLowerCase();
+  const days =
+    f === "weekly" ? 7 : f === "fortnightly" ? 14 : f === "monthly" ? 30 : 1;
+  return addDays(base, days).toISOString();
+}
+
 export default function AuditPage() {
+  const router = useRouter();
   const [state, setState] = useState<ScreenState>({ status: "loading" });
   const [photoOpenFor, setPhotoOpenFor] = useState<string | null>(null);
   const [photoPreviewUrlByItemId, setPhotoPreviewUrlByItemId] = useState<
     Record<string, string>
   >({});
+  const [auditorZoneId, setAuditorZoneId] = useState<string | null>(null);
 
   useEffect(() => {
     return () => {
@@ -161,44 +188,110 @@ export default function AuditPage() {
     let cancelled = false;
 
     (async () => {
-      const { data: leader, error: leaderError } = await supabase
-        .from("zone_leaders")
-        .select("id,name,zone_id,zones(name)")
-        .limit(1)
+      const profile = await getCurrentUser();
+      if (cancelled) return;
+
+      if (!profile) {
+        router.replace("/login");
+        return;
+      }
+
+      const role = String(profile.role ?? "").toLowerCase();
+      if (role !== "zone_leader" && role !== "auditor") {
+        router.replace(getRoleHomeRoute(profile.role));
+        return;
+      }
+
+      if (role === "auditor") {
+        if (!profile.plant_id) {
+          setState({
+            status: "error",
+            message: "Your profile has no plant assigned. Contact an administrator.",
+            homeHref: getRoleHomeRoute(profile.role),
+          });
+          return;
+        }
+
+        const { data: zones, error: zonesErr } = await supabase
+          .from("zones")
+          .select("id,name,department,org_id,plant_id,audit_frequency")
+          .eq("plant_id", profile.plant_id)
+          .order("name", { ascending: true });
+
+        if (cancelled) return;
+
+        if (zonesErr) {
+          setState({
+            status: "error",
+            message: zonesErr.message,
+            homeHref: getRoleHomeRoute(profile.role),
+          });
+          return;
+        }
+
+        const list = (zones ?? []) as ZoneRow[];
+        if (list.length === 0) {
+          setState({
+            status: "error",
+            message: "No zones found for your plant.",
+            homeHref: getRoleHomeRoute(profile.role),
+          });
+          return;
+        }
+
+        setAuditorZoneId(list[0]?.id ?? null);
+        setState({ status: "select_zone", profile, zones: list });
+        return;
+      }
+
+      const { data: zone, error: zoneErr } = await supabase
+        .from("zones")
+        .select("id,name,department,org_id,plant_id,audit_frequency")
+        .eq("leader_id", profile.id)
         .maybeSingle();
 
       if (cancelled) return;
 
-      if (leaderError) {
-        setState({ status: "error", message: leaderError.message });
-        return;
-      }
-
-      if (!leader) {
+      if (zoneErr) {
         setState({
           status: "error",
-          message: "No zone leader found. Seed the database, then refresh.",
+          message: zoneErr.message,
+          homeHref: getRoleHomeRoute(profile.role),
         });
         return;
       }
 
-      const { data: template, error: templateError } = await supabase
+      if (!zone) {
+        setState({
+          status: "error",
+          message: "No zone found where you are assigned as leader.",
+          homeHref: getRoleHomeRoute(profile.role),
+        });
+        return;
+      }
+
+      const { data: template, error: templateErr } = await supabase
         .from("audit_templates")
         .select("id,name,items")
-        .limit(1)
+        .eq("is_default", true)
         .maybeSingle();
 
       if (cancelled) return;
 
-      if (templateError) {
-        setState({ status: "error", message: templateError.message });
+      if (templateErr) {
+        setState({
+          status: "error",
+          message: templateErr.message,
+          homeHref: getRoleHomeRoute(profile.role),
+        });
         return;
       }
 
       if (!template) {
         setState({
           status: "error",
-          message: "No audit template found. Seed the database, then refresh.",
+          message: "No default audit template (is_default = true).",
+          homeHref: getRoleHomeRoute(profile.role),
         });
         return;
       }
@@ -208,14 +301,16 @@ export default function AuditPage() {
         setState({
           status: "error",
           message:
-            "Audit template has no valid items. Ensure `items` is a JSON array with {id,pillar,text}.",
+            "Template has no items. Ensure items is a JSON array with id, pillar, text.",
+          homeHref: getRoleHomeRoute(profile.role),
         });
         return;
       }
 
       setState({
         status: "in_progress",
-        leader: leader as ZoneLeader,
+        profile,
+        zone: zone as ZoneRow,
         template: template as AuditTemplate,
         items,
         index: 0,
@@ -226,7 +321,68 @@ export default function AuditPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [router]);
+
+  async function beginAuditorAudit(
+    profile: UserProfile,
+    zoneId: string,
+    zones: ZoneRow[],
+  ) {
+    const { data: template, error: templateErr } = await supabase
+      .from("audit_templates")
+      .select("id,name,items")
+      .eq("is_default", true)
+      .maybeSingle();
+
+    if (templateErr) {
+      setState({
+        status: "error",
+        message: templateErr.message,
+        homeHref: getRoleHomeRoute(profile.role),
+      });
+      return;
+    }
+
+    if (!template) {
+      setState({
+        status: "error",
+        message: "No default audit template (is_default = true).",
+        homeHref: getRoleHomeRoute(profile.role),
+      });
+      return;
+    }
+
+    const items = parseItems((template as AuditTemplate).items);
+    if (items.length === 0) {
+      setState({
+        status: "error",
+        message: "Template has no valid items.",
+        homeHref: getRoleHomeRoute(profile.role),
+      });
+      return;
+    }
+
+    const zone = zones.find((z) => z.id === zoneId) ?? null;
+
+    if (!zone) {
+      setState({
+        status: "error",
+        message: "Selected zone not found.",
+        homeHref: getRoleHomeRoute(profile.role),
+      });
+      return;
+    }
+
+    setState({
+      status: "in_progress",
+      profile,
+      zone,
+      template: template as AuditTemplate,
+      items,
+      index: 0,
+      answers: {},
+    });
+  }
 
   const view = useMemo(() => {
     if (state.status !== "in_progress") return null;
@@ -235,8 +391,10 @@ export default function AuditPage() {
     return { item, existing };
   }, [state]);
 
-  async function submitAudit(
-    leader: ZoneLeader,
+  async function runSubmit(
+    profile: UserProfile,
+    zone: ZoneRow,
+    template: AuditTemplate,
     items: AuditItem[],
     answers: Record<string, ResponseDraft>,
   ) {
@@ -248,45 +406,82 @@ export default function AuditPage() {
 
     const score =
       total === 0 ? 0 : (sumScores / (Math.max(1, total) * 4)) * 100;
-    const xpEarned = 50;
+    const xpEarned = score >= 80 ? 80 : 50;
+    const role = String(profile.role ?? "").toLowerCase();
+    const auditType = role === "auditor" ? "cross" : "self";
 
-    const { data: session, error: sessionError } = await supabase
+    const orgId = zone.org_id ?? profile.org_id;
+    const plantId = zone.plant_id ?? profile.plant_id;
+
+    if (!orgId || !plantId) {
+      throw new Error("Missing org_id or plant_id for this audit.");
+    }
+
+    const sessionPayload: Record<string, unknown> = {
+      zone_id: zone.id,
+      conducted_by: profile.id,
+      template_id: template.id,
+      org_id: orgId,
+      plant_id: plantId,
+      audit_type: auditType,
+      score,
+      xp_earned: xpEarned,
+      completed_at: new Date().toISOString(),
+    };
+
+    let sessionId: string;
+    const ins1 = await supabase
       .from("audit_sessions")
-      .insert({
-        zone_id: leader.zone_id,
-        leader_id: leader.id,
-        type: "self",
-        score,
-        completed_at: new Date().toISOString(),
-        xp_earned: xpEarned,
-      })
+      .insert(sessionPayload)
       .select("id")
       .single();
 
-    if (sessionError) throw new Error(sessionError.message);
-
-    const sessionId = (session as { id: string }).id;
-
-    const uploadTargets = items
-      .map((item) => {
-        const a = answers[item.id];
-        const file = a?.photoFile ?? null;
-        if (!file) return null;
-        const ext = extFromMimeOrName(file);
-        const path = `audit-photos/${leader.id}/${sessionId}/${item.id}.${ext}`;
-        return { itemId: item.id, file, path };
-      })
-      .filter(Boolean) as { itemId: string; file: File; path: string }[];
+    if (ins1.error || !ins1.data) {
+      const ins2 = await supabase
+        .from("audit_sessions")
+        .insert({
+          zone_id: zone.id,
+          conducted_by: profile.id,
+          template_id: template.id,
+          org_id: orgId,
+          plant_id: plantId,
+          type: auditType,
+          score,
+          xp_earned: xpEarned,
+          completed_at: sessionPayload.completed_at,
+        })
+        .select("id")
+        .single();
+      if (ins2.error || !ins2.data) {
+        throw new Error(
+          ins1.error?.message ?? ins2.error?.message ?? "Could not create audit session",
+        );
+      }
+      sessionId = (ins2.data as { id: string }).id;
+    } else {
+      sessionId = (ins1.data as { id: string }).id;
+    }
 
     const photoUrlByItemId = new Map<string, string>();
-    for (const t of uploadTargets) {
+
+    for (const item of items) {
+      const a = answers[item.id];
+      const file = a?.photoFile ?? null;
+      if (!file) continue;
+
+      const ext = extFromMimeOrName(file);
+      const path = `${orgId}/${plantId}/${zone.id}/${sessionId}/${item.id}.${ext}`;
+
       const { error: uploadError } = await supabase.storage
         .from("audit-photos")
-        .upload(t.path, t.file, { upsert: true });
+        .upload(path, file, { upsert: true });
+
       if (uploadError) throw new Error(uploadError.message);
 
-      const { data } = supabase.storage.from("audit-photos").getPublicUrl(t.path);
-      if (data?.publicUrl) photoUrlByItemId.set(t.itemId, data.publicUrl);
+      const { data: pub } = supabase.storage
+        .from("audit-photos")
+        .getPublicUrl(path);
+      if (pub?.publicUrl) photoUrlByItemId.set(item.id, pub.publicUrl);
     }
 
     const rows = items.map((item) => {
@@ -306,26 +501,82 @@ export default function AuditPage() {
 
     if (responsesError) throw new Error(responsesError.message);
 
-    const breakdown = items.reduce(
-      (acc, item) => {
-        const pillar = item.pillar || "Unknown";
-        const a = answers[item.id];
-        const earned = Number(a?.score ?? 0);
-        const max = 4;
+    const breakdown: Record<string, { earned: number; max: number }> = {};
+    for (const p of PILLAR_ORDER) {
+      breakdown[p] = { earned: 0, max: PILLAR_MAX[p] };
+    }
+    for (const item of items) {
+      const pillar = item.pillar;
+      if (
+        !PILLAR_ORDER.includes(pillar as (typeof PILLAR_ORDER)[number])
+      ) {
+        continue;
+      }
+      const a = answers[item.id];
+      breakdown[pillar].earned += Number(a?.score ?? 0);
+    }
 
-        acc[pillar] = acc[pillar] ?? { earned: 0, max: 0 };
-        acc[pillar].earned += earned;
-        acc[pillar].max += max;
-        return acc;
-      },
-      {} as Record<string, { earned: number; max: number }>,
-    );
+    const todayIso = new Date().toISOString();
+    const nextDue = nextAuditDueFromToday(zone.audit_frequency);
 
-    return { score, xpEarned, breakdown, photosUploaded: uploadTargets.length };
+    const { error: zoneUpdErr } = await supabase
+      .from("zones")
+      .update({
+        last_audit_date: todayIso,
+        next_audit_due: nextDue,
+      })
+      .eq("id", zone.id);
+
+    if (zoneUpdErr) {
+      throw new Error(zoneUpdErr.message);
+    }
+
+    if (role === "zone_leader") {
+      const { data: statsRow } = await supabase
+        .from("zone_leader_stats")
+        .select("id,xp,streak_days")
+        .eq("user_id", profile.id)
+        .maybeSingle();
+
+      const prevXp = Number((statsRow as { xp?: number } | null)?.xp ?? 0);
+      const prevStreak = Number(
+        (statsRow as { streak_days?: number } | null)?.streak_days ?? 0,
+      );
+
+      const statsUpdate = {
+        xp: prevXp + xpEarned,
+        streak_days: prevStreak + 1,
+        last_audit_date: todayIso.split("T")[0],
+      };
+
+      if (statsRow) {
+        const { error: stErr } = await supabase
+          .from("zone_leader_stats")
+          .update(statsUpdate)
+          .eq("user_id", profile.id);
+        if (stErr) throw new Error(stErr.message);
+      } else {
+        const { error: insErr } = await supabase
+          .from("zone_leader_stats")
+          .insert({
+            user_id: profile.id,
+            zone_id: zone.id,
+            org_id: orgId,
+            plant_id: plantId,
+            xp: xpEarned,
+            level: 1,
+            streak_days: 1,
+            last_audit_date: statsUpdate.last_audit_date,
+          });
+        if (insErr) throw new Error(insErr.message);
+      }
+    }
+
+    return { score, xpEarned, breakdown };
   }
 
   const pageShell =
-    "min-h-screen w-full bg-zinc-100 px-4 py-6 text-zinc-950 sm:px-6 sm:py-10";
+    "min-h-full w-full bg-zinc-100 px-4 py-6 pb-28 text-zinc-950 sm:px-6 sm:py-8";
   const cardShell =
     "mx-auto w-full max-w-md rounded-2xl border border-black/5 bg-white p-5 shadow-sm sm:max-w-2xl sm:p-8";
 
@@ -351,10 +602,10 @@ export default function AuditPage() {
           <div className="mt-2 text-sm text-rose-700">{state.message}</div>
           <div className="mt-6">
             <Link
-              href="/dashboard"
+              href={state.homeHref}
               className="inline-flex min-h-12 items-center justify-center rounded-xl bg-zinc-900 px-4 text-sm font-semibold text-white"
             >
-              Back to Dashboard
+              Go home
             </Link>
           </div>
         </div>
@@ -362,7 +613,48 @@ export default function AuditPage() {
     );
   }
 
+  if (state.status === "select_zone") {
+    return (
+      <div className={pageShell}>
+        <div className={cardShell}>
+          <h1 className="text-xl font-bold text-zinc-900">Choose zone to audit</h1>
+          <p className="mt-2 text-sm text-zinc-600">
+            Select a zone in your plant, then start the audit.
+          </p>
+
+          <label className="mt-6 block text-sm font-semibold text-zinc-700">
+            Zone
+          </label>
+          <select
+            value={auditorZoneId ?? ""}
+            onChange={(e) => setAuditorZoneId(e.target.value || null)}
+            className="mt-2 min-h-[48px] w-full rounded-xl border border-zinc-200 bg-white px-3 text-base font-semibold text-zinc-900 shadow-sm outline-none focus:border-blue-500"
+          >
+            {state.zones.map((z) => (
+              <option key={z.id} value={z.id}>
+                {z.name ?? "Unnamed zone"}
+              </option>
+            ))}
+          </select>
+
+          <button
+            type="button"
+            disabled={!auditorZoneId}
+            onClick={() => {
+              if (!auditorZoneId) return;
+              void beginAuditorAudit(state.profile, auditorZoneId, state.zones);
+            }}
+            className="mt-6 min-h-[48px] w-full rounded-2xl bg-blue-600 px-5 text-base font-bold text-white shadow-sm hover:bg-blue-500 disabled:opacity-50"
+          >
+            Start audit
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (state.status === "done") {
+    const home = getRoleHomeRoute(state.profile.role);
     return (
       <div className={pageShell}>
         <div className={cardShell}>
@@ -374,46 +666,41 @@ export default function AuditPage() {
             <span className="text-zinc-400">/100</span>
           </div>
 
-          <div className="mt-4 rounded-2xl bg-blue-50 px-4 py-4">
-            <div className="text-sm font-semibold text-blue-700">XP Earned</div>
-            <div className="mt-1 text-2xl font-semibold text-blue-900">
+          <div className="mt-4 rounded-2xl bg-blue-50 px-4 py-4 ring-1 ring-blue-100">
+            <div className="text-sm font-semibold text-blue-800">XP earned</div>
+            <div className="mt-1 text-2xl font-bold text-blue-900">
               +{state.xpEarned}
             </div>
           </div>
 
-          <div className="mt-3 text-sm font-semibold text-zinc-700">
-            {state.photosUploaded} photos uploaded
-          </div>
-
-          <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4">
-            <div className="text-sm font-semibold text-zinc-700">
+          <div className="mt-6 rounded-2xl border border-zinc-200 bg-white p-4">
+            <div className="text-sm font-semibold text-zinc-800">
               Per-pillar breakdown
             </div>
-            <div className="mt-3 space-y-2 text-sm">
-              {[
-                ["Sort", 28],
-                ["Set", 44],
-                ["Shine", 44],
-                ["Standardise", 44],
-                ["Sustain", 36],
-                ["Safety", 36],
-              ].map(([pillar, max]) => (
-                <div
-                  key={pillar}
-                  className="flex items-center justify-between rounded-xl bg-zinc-50 px-3 py-2"
-                >
-                  <div className="font-semibold text-zinc-800">{pillar}</div>
-                  <div className="font-semibold text-zinc-900">
-                    {(state.breakdown[pillar]?.earned ?? 0)}/{max}
-                  </div>
-                </div>
-              ))}
-            </div>
+            <table className="mt-3 w-full text-sm">
+              <tbody className="divide-y divide-zinc-100">
+                {PILLAR_ORDER.map((pillar) => {
+                  const row = state.breakdown[pillar];
+                  const earned = row?.earned ?? 0;
+                  const max = PILLAR_MAX[pillar] ?? row?.max ?? 0;
+                  return (
+                    <tr key={pillar}>
+                      <td className="py-2.5 font-semibold text-zinc-800">
+                        {pillar}
+                      </td>
+                      <td className="py-2.5 text-right font-semibold tabular-nums text-zinc-900">
+                        {earned}/{max}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
 
           <Link
-            href="/dashboard"
-            className="mt-6 inline-flex min-h-12 w-full items-center justify-center rounded-2xl bg-zinc-900 px-5 text-base font-semibold text-white"
+            href={home}
+            className="mt-8 flex min-h-[48px] w-full items-center justify-center rounded-2xl bg-zinc-900 px-5 text-base font-bold text-white"
           >
             Back to Dashboard
           </Link>
@@ -428,7 +715,7 @@ export default function AuditPage() {
         <div className={cardShell}>
           <div className="text-lg font-semibold">Submitting…</div>
           <div className="mt-2 text-sm text-zinc-600">
-            Saving your audit session and responses.
+            Saving your audit, responses, and uploads.
           </div>
           <div className="mt-6 h-2 w-full overflow-hidden rounded-full bg-zinc-200">
             <div className="h-full w-2/3 animate-pulse rounded-full bg-blue-600" />
@@ -438,13 +725,17 @@ export default function AuditPage() {
     );
   }
 
-  // in progress
-  const leader = state.leader;
+  if (state.status !== "in_progress") {
+    return null;
+  }
+
+  const leader = state.profile;
   const template = state.template;
   const items = state.items;
   const index = state.index;
   const item = view?.item;
   const existing = view?.existing;
+  const zone = state.zone;
 
   if (!item) {
     return (
@@ -453,18 +744,12 @@ export default function AuditPage() {
           <div className="text-lg font-semibold text-zinc-900">
             Question unavailable
           </div>
-          <div className="mt-2 text-sm text-zinc-600">
-            The current step doesn&apos;t match any audit question. Return to the
-            dashboard and start again.
-          </div>
-          <div className="mt-6">
-            <Link
-              href="/dashboard"
-              className="inline-flex min-h-12 w-full items-center justify-center rounded-2xl bg-zinc-900 px-5 text-base font-semibold text-white"
-            >
-              Back to Dashboard
-            </Link>
-          </div>
+          <Link
+            href={getRoleHomeRoute(leader.role)}
+            className="mt-6 inline-flex min-h-[48px] w-full items-center justify-center rounded-2xl bg-zinc-900 px-5 text-base font-bold text-white"
+          >
+            Go home
+          </Link>
         </div>
       </div>
     );
@@ -472,117 +757,106 @@ export default function AuditPage() {
 
   const total = items.length;
   const current = index + 1;
-  const progress = clamp(current / total, 0, 1);
-  const zoneName = getZoneName(leader) ?? "Unknown zone";
-
-  const showEvidence =
-    false;
+  const progress = Math.min(1, Math.max(0, current / total));
+  const zoneName = zone.name ?? "Zone";
 
   const handlePrevious = () => {
     if (index === 0) return;
     setState((s) => {
       if (s.status !== "in_progress") return s;
-      return {
-        ...s,
-        index: s.index - 1,
-      };
+      return { ...s, index: s.index - 1 };
     });
   };
 
   const recordAnswer = (scoreValue: 0 | 1 | 2 | 3 | 4) => {
-    if (!item) return;
+    const prev = state.answers[item.id];
+    const nextAnswers: Record<string, ResponseDraft> = {
+      ...state.answers,
+      [item.id]: {
+        item_id: item.id,
+        score: scoreValue,
+        notes: null,
+        photoFile: prev?.photoFile ?? null,
+      },
+    };
 
-    setState((s) => {
-      if (s.status !== "in_progress") return s;
-      if (!item) return s;
+    const nextIndex = index + 1;
 
-      const prev = s.answers[item.id];
-      const nextAnswers: Record<string, ResponseDraft> = {
-        ...s.answers,
-        [item.id]: {
-          item_id: item.id,
-          score: scoreValue,
-          notes: null,
-          photoFile: prev?.photoFile ?? null,
-        },
-      };
-
-      const nextIndex = s.index + 1;
-      if (nextIndex >= s.items.length) {
-        const submitting: ScreenState = {
-          status: "submitting",
-          leader: s.leader,
-          template: s.template,
-          items: s.items,
-          answers: nextAnswers,
-        };
-        void (async () => {
-          try {
-            const { score, xpEarned, breakdown, photosUploaded } =
-              await submitAudit(
-              s.leader,
-              s.items,
-              nextAnswers,
-            );
-            setState({
-              status: "done",
-              score,
-              xpEarned,
-              breakdown,
-              photosUploaded,
-            });
-          } catch (e) {
-            setState({
-              status: "error",
-              message: e instanceof Error ? e.message : "Submission failed.",
-            });
-          }
-        })();
-        return submitting;
-      }
-
-      return {
-        ...s,
+    if (nextIndex >= items.length) {
+      setState({
+        status: "submitting",
+        profile: leader,
+        zone,
+        template,
+        items,
         answers: nextAnswers,
-        index: nextIndex,
-      };
+      });
+
+      void (async () => {
+        try {
+          const result = await runSubmit(
+            leader,
+            zone,
+            template,
+            items,
+            nextAnswers,
+          );
+          setState({
+            status: "done",
+            score: result.score,
+            xpEarned: result.xpEarned,
+            breakdown: result.breakdown,
+            profile: leader,
+          });
+        } catch (e) {
+          setState({
+            status: "error",
+            message: e instanceof Error ? e.message : "Submission failed.",
+            homeHref: getRoleHomeRoute(leader.role),
+          });
+        }
+      })();
+      return;
+    }
+
+    setState({
+      ...state,
+      answers: nextAnswers,
+      index: nextIndex,
     });
   };
 
   return (
     <div className={pageShell}>
       <div className={cardShell}>
-        <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-2">
           <div className="text-sm font-semibold text-zinc-500">
             {template.name ?? "Audit"} • {zoneName}
           </div>
-          <div className="text-lg font-semibold">
+          <div className="text-lg font-bold text-zinc-900">
             Question {current} of {total}
           </div>
-          <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-zinc-200">
+          <div className="mt-1 h-2.5 w-full overflow-hidden rounded-full bg-zinc-200">
             <div
-              className="h-full rounded-full bg-blue-600 transition-all"
+              className="h-full rounded-full bg-blue-600 transition-all duration-200"
               style={{ width: `${Math.round(progress * 100)}%` }}
             />
           </div>
         </div>
 
-        <div className="mt-6">
+        <div className="mt-8">
           <div
-            className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold ring-1 ${pillarPillClass(item.pillar)}`}
+            className={`inline-flex items-center rounded-full px-3 py-1.5 text-sm font-semibold ring-2 ${pillarBadgeClass(item.pillar)}`}
           >
             {item.pillar}
           </div>
 
-          <div className="mt-4 text-[20px] font-semibold leading-7 tracking-tight sm:text-2xl">
+          <div className="mt-5 text-[20px] font-semibold leading-snug tracking-tight sm:text-2xl">
             {item.text}
           </div>
 
-          <div className="mt-6">
-            <div className="text-sm font-semibold text-zinc-600">
-              Score (0–4)
-            </div>
-            <div className="mt-3 grid grid-cols-5 gap-2">
+          <div className="mt-8">
+            <div className="grid grid-cols-5 gap-2">
               {([0, 1, 2, 3, 4] as const).map((n) => {
                 const selected = existing?.score === n;
                 return (
@@ -591,7 +865,7 @@ export default function AuditPage() {
                     type="button"
                     onClick={() => recordAnswer(n)}
                     className={[
-                      "min-h-12 w-full rounded-2xl border text-base font-semibold shadow-sm transition active:scale-[0.99]",
+                      "flex min-h-[48px] min-w-[48px] items-center justify-center rounded-xl border-2 text-lg font-bold shadow-sm transition active:scale-[0.98]",
                       selected
                         ? "border-blue-600 bg-blue-600 text-white"
                         : "border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-50",
@@ -603,22 +877,21 @@ export default function AuditPage() {
                 );
               })}
             </div>
-            <div className="mt-3 text-xs text-zinc-500">
-              0 = No Compliance • 1 = Very Little • 2 = Some • 3 = Significant •
-              4 = Total Compliance
-            </div>
+            <p className="mt-2 text-xs text-zinc-500">
+              0–4 scale • Tap a score to continue
+            </p>
           </div>
 
-          <div className="mt-4">
+          <div className="mt-6">
             <button
               type="button"
               onClick={() =>
                 setPhotoOpenFor((cur) => (cur === item.id ? null : item.id))
               }
-              className="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm transition hover:bg-zinc-50"
+              className="inline-flex min-h-[48px] items-center gap-2 rounded-xl border border-zinc-200 bg-zinc-50 px-4 text-sm font-semibold text-zinc-900"
             >
               <span aria-hidden>📷</span>
-              Add Photo (optional)
+              Add Photo
             </button>
 
             {photoOpenFor === item.id && (
@@ -627,7 +900,7 @@ export default function AuditPage() {
                   type="file"
                   accept="image/*"
                   capture="environment"
-                  className="block w-full text-sm file:mr-4 file:rounded-xl file:border-0 file:bg-zinc-900 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white"
+                  className="block w-full text-sm file:mr-4 file:min-h-[44px] file:rounded-xl file:border-0 file:bg-zinc-900 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white"
                   onChange={(e) => {
                     const file = e.target.files?.[0] ?? null;
                     setPhotoPreviewUrlByItemId((cur) => {
@@ -647,15 +920,15 @@ export default function AuditPage() {
                     });
                     setState((s) => {
                       if (s.status !== "in_progress") return s;
-                      const prev = s.answers[item.id];
+                      const pr = s.answers[item.id];
                       return {
                         ...s,
                         answers: {
                           ...s.answers,
                           [item.id]: {
                             item_id: item.id,
-                            score: prev?.score ?? 0,
-                            notes: prev?.notes ?? null,
+                            score: pr?.score ?? 0,
+                            notes: pr?.notes ?? null,
                             photoFile: file,
                           },
                         },
@@ -664,48 +937,35 @@ export default function AuditPage() {
                   }}
                 />
 
-                {existing?.photoFile ? (
+                {existing?.photoFile && photoPreviewUrlByItemId[item.id] ? (
                   <div className="mt-3 flex items-center gap-3">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
-                      alt="Selected evidence"
+                      alt=""
                       src={photoPreviewUrlByItemId[item.id]}
-                      className="h-14 w-14 rounded-xl object-cover ring-1 ring-black/5"
+                      className="h-16 w-16 rounded-xl object-cover ring-1 ring-black/10"
                     />
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold text-zinc-900">
-                        {existing.photoFile.name}
-                      </div>
-                      <div className="text-xs text-zinc-500">Ready to upload</div>
-                    </div>
+                    <span className="truncate text-sm font-medium text-zinc-700">
+                      {existing.photoFile.name}
+                    </span>
                   </div>
-                ) : (
-                  <div className="mt-2 text-xs text-zinc-500">
-                    Choose an image to attach to this question.
-                  </div>
-                )}
+                ) : null}
               </div>
             )}
           </div>
 
-          <div className="mt-6 flex items-center justify-between">
+          <div className="mt-8 flex items-center justify-between gap-3">
             <button
               type="button"
               onClick={handlePrevious}
               disabled={index === 0}
-              className="inline-flex min-h-12 items-center justify-center rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50"
+              className="min-h-[48px] rounded-xl border border-zinc-200 bg-white px-5 text-sm font-semibold text-zinc-900 shadow-sm disabled:cursor-not-allowed disabled:opacity-40"
             >
               Previous
             </button>
-
-            <div className="text-xs text-zinc-500">
-              Tap a score to continue
-            </div>
           </div>
         </div>
       </div>
     </div>
   );
 }
-
-
