@@ -112,10 +112,25 @@ export async function POST(request: Request) {
   }
 
   if (callerRole === "admin") {
-    if (orgId !== callerProfile.org_id || plantId !== callerProfile.plant_id) {
+    if (orgId !== callerProfile.org_id) {
       return NextResponse.json(
-        { success: false, error: "org/plant mismatch" },
+        { success: false, error: "org mismatch" },
         { status: 403 },
+      );
+    }
+    if (!callerProfile.plant_id) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Complete plant setup before creating users",
+        },
+        { status: 403 },
+      );
+    }
+    if (!plantId) {
+      return NextResponse.json(
+        { success: false, error: "plantId is required" },
+        { status: 400 },
       );
     }
   }
@@ -126,6 +141,29 @@ export async function POST(request: Request) {
       persistSession: false,
     },
   });
+
+  if (callerRole === "admin" && plantId) {
+    const { data: plantForOrg, error: plantLookupErr } = await adminSupabase
+      .from("plants")
+      .select("org_id")
+      .eq("id", plantId)
+      .maybeSingle();
+    if (plantLookupErr || !plantForOrg) {
+      return NextResponse.json(
+        { success: false, error: "Plant not found" },
+        { status: 400 },
+      );
+    }
+    if (plantForOrg.org_id !== callerProfile.org_id) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Plant does not belong to your organisation",
+        },
+        { status: 403 },
+      );
+    }
+  }
 
   const roleLower = role.toLowerCase();
   if (roleLower === "zone_leader") {

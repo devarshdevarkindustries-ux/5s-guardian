@@ -43,9 +43,24 @@ type NcrRow = {
   created_at: string | null;
 };
 
+type OrgPlant = {
+  id: string;
+  name: string | null;
+  location: string | null;
+};
+
 type LoadState =
   | { status: "loading" }
   | { status: "error"; message: string }
+  | {
+      status: "needs_plant";
+      profile: {
+        id: string;
+        full_name: string | null;
+        org_id: string;
+        org_name: string | null;
+      };
+    }
   | {
       status: "ready";
       profile: {
@@ -57,6 +72,7 @@ type LoadState =
         org_name: string | null;
         plant_name: string | null;
       };
+      orgPlants: OrgPlant[];
       stats: {
         zones: number;
         users: number;
@@ -224,6 +240,16 @@ export default function AdminPage() {
 
   const [banner, setBanner] = useState<string | null>(null);
 
+  const [setupPlantName, setSetupPlantName] = useState("");
+  const [setupPlantLocation, setSetupPlantLocation] = useState("");
+  const [creatingFirstPlant, setCreatingFirstPlant] = useState(false);
+  const [setupError, setSetupError] = useState<string | null>(null);
+
+  const [addPlantOpen, setAddPlantOpen] = useState(false);
+  const [newPlantName, setNewPlantName] = useState("");
+  const [newPlantLocation, setNewPlantLocation] = useState("");
+  const [savingNewPlant, setSavingNewPlant] = useState(false);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -232,11 +258,28 @@ export default function AdminPage() {
         router.replace("/unauthorized");
         return;
       }
-      if (!user.org_id || !user.plant_id) {
-        setState({
-          status: "error",
-          message: "Your admin account is missing org_id or plant_id.",
-        });
+      if (!user.org_id) {
+        if (!cancelled) {
+          setState({
+            status: "error",
+            message: "Your admin account is missing organisation assignment.",
+          });
+        }
+        return;
+      }
+
+      if (!user.plant_id) {
+        if (!cancelled) {
+          setState({
+            status: "needs_plant",
+            profile: {
+              id: user.id,
+              full_name: user.full_name,
+              org_id: user.org_id,
+              org_name: user.org_name,
+            },
+          });
+        }
         return;
       }
 
@@ -244,6 +287,7 @@ export default function AdminPage() {
       const weekStart = startOfWeekLocal().toISOString();
 
       const [
+        orgPlantsRes,
         zonesCount,
         usersCount,
         auditsCount,
@@ -253,6 +297,11 @@ export default function AdminPage() {
         auditsRes,
         ncrsRes,
       ] = await Promise.all([
+        supabase
+          .from("plants")
+          .select("id,name,location")
+          .eq("org_id", user.org_id)
+          .order("name", { ascending: true }),
         supabase
           .from("zones")
           .select("id", { count: "exact", head: true })
@@ -300,6 +349,7 @@ export default function AdminPage() {
       if (cancelled) return;
 
       const firstErr =
+        orgPlantsRes.error ??
         zonesCount.error ??
         usersCount.error ??
         auditsCount.error ??
@@ -325,6 +375,7 @@ export default function AdminPage() {
           org_name: user.org_name,
           plant_name: user.plant_name,
         },
+        orgPlants: (orgPlantsRes.data ?? []) as OrgPlant[],
         stats: {
           zones: zonesCount.count ?? 0,
           users: usersCount.count ?? 0,
@@ -398,6 +449,96 @@ export default function AdminPage() {
       zonesWithoutLeader,
     };
   }, [state]);
+
+  async function createFirstPlant(e: React.FormEvent) {
+    e.preventDefault();
+    if (state.status !== "needs_plant") return;
+    if (!setupPlantName.trim()) return;
+
+    setCreatingFirstPlant(true);
+    setSetupError(null);
+    try {
+      const { data: plantRow, error: insertErr } = await supabase
+        .from("plants")
+        .insert({
+          org_id: state.profile.org_id,
+          name: setupPlantName.trim(),
+          location: setupPlantLocation.trim() || null,
+          is_active: true,
+        })
+        .select("id")
+        .single();
+
+      if (insertErr) throw new Error(insertErr.message);
+
+      const { error: profileErr } = await supabase
+        .from("user_profiles")
+        .update({ plant_id: plantRow.id })
+        .eq("id", state.profile.id);
+
+      if (profileErr) throw new Error(profileErr.message);
+
+      window.location.reload();
+    } catch (err) {
+      setSetupError(err instanceof Error ? err.message : "Failed to create plant.");
+    } finally {
+      setCreatingFirstPlant(false);
+    }
+  }
+
+  async function switchPlant(nextPlantId: string) {
+    if (state.status !== "ready") return;
+    if (nextPlantId === state.profile.plant_id) return;
+
+    const { error } = await supabase
+      .from("user_profiles")
+      .update({ plant_id: nextPlantId })
+      .eq("id", state.profile.id);
+
+    if (error) {
+      setBanner(error.message);
+      return;
+    }
+
+    window.location.reload();
+  }
+
+  async function submitAddPlant() {
+    if (state.status !== "ready") return;
+    if (!newPlantName.trim()) return;
+
+    setSavingNewPlant(true);
+    try {
+      const { data: plantRow, error: insertErr } = await supabase
+        .from("plants")
+        .insert({
+          org_id: state.profile.org_id,
+          name: newPlantName.trim(),
+          location: newPlantLocation.trim() || null,
+          is_active: true,
+        })
+        .select("id")
+        .single();
+
+      if (insertErr) throw new Error(insertErr.message);
+
+      const { error: profileErr } = await supabase
+        .from("user_profiles")
+        .update({ plant_id: plantRow.id })
+        .eq("id", state.profile.id);
+
+      if (profileErr) throw new Error(profileErr.message);
+
+      setAddPlantOpen(false);
+      setNewPlantName("");
+      setNewPlantLocation("");
+      window.location.reload();
+    } catch (err) {
+      setBanner(err instanceof Error ? err.message : "Failed to add plant.");
+    } finally {
+      setSavingNewPlant(false);
+    }
+  }
 
   async function logout() {
     await supabase.auth.signOut();
@@ -623,6 +764,69 @@ export default function AdminPage() {
     );
   }
 
+  if (state.status === "needs_plant") {
+    const displayName = state.profile.full_name?.trim() || "there";
+    return (
+      <div className={shell}>
+        <div className="mx-auto max-w-lg">
+          <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm sm:p-8">
+            <h1 className="text-2xl font-bold tracking-tight text-zinc-900">
+              Welcome to 5S Guardian
+            </h1>
+            <p className="mt-2 text-sm leading-relaxed text-zinc-600">
+              Welcome {displayName}! Let&apos;s set up your first plant.
+            </p>
+
+            {setupError && (
+              <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+                {setupError}
+              </div>
+            )}
+
+            <form onSubmit={createFirstPlant} className="mt-6 space-y-4">
+              <div>
+                <label className="text-sm font-semibold text-zinc-700">Plant name</label>
+                <input
+                  value={setupPlantName}
+                  onChange={(e) => setSetupPlantName(e.target.value)}
+                  className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-zinc-900"
+                  placeholder="Mumbai Plant"
+                  autoComplete="organization"
+                  required
+                />
+              </div>
+              <div>
+                <label className="text-sm font-semibold text-zinc-700">Location / city</label>
+                <input
+                  value={setupPlantLocation}
+                  onChange={(e) => setSetupPlantLocation(e.target.value)}
+                  className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-zinc-900"
+                  placeholder="Mumbai"
+                  autoComplete="address-level2"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={creatingFirstPlant}
+                className="inline-flex min-h-12 w-full items-center justify-center rounded-2xl bg-zinc-900 px-5 text-base font-semibold text-white shadow-sm hover:bg-zinc-800 disabled:opacity-50 active:scale-[0.99]"
+              >
+                {creatingFirstPlant ? "Creating..." : "Create Plant"}
+              </button>
+            </form>
+
+            <button
+              type="button"
+              onClick={() => void logout()}
+              className="mt-6 w-full text-center text-sm font-semibold text-zinc-600 underline-offset-2 hover:text-zinc-900 hover:underline"
+            >
+              Log out
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (state.status === "error") {
     return (
       <div className={shell}>
@@ -644,20 +848,58 @@ export default function AdminPage() {
     <div className={shell}>
       <div className="mx-auto max-w-7xl space-y-8">
         {/* SECTION 1 — Header */}
-        <header className="flex flex-col gap-4 border-b border-zinc-200/80 pb-6 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight text-zinc-900 sm:text-3xl">
-              {plantTitle} — Admin Dashboard
-            </h1>
-            <p className="mt-1 text-sm font-semibold text-zinc-600">{orgTitle}</p>
+        <header className="flex flex-col gap-4 border-b border-zinc-200/80 pb-6">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0 flex-1">
+              {state.orgPlants.length > 1 ? (
+                <div className="mb-3 max-w-md">
+                  <label
+                    htmlFor="admin-plant-select"
+                    className="text-xs font-semibold uppercase tracking-wide text-zinc-500"
+                  >
+                    Plant
+                  </label>
+                  <select
+                    id="admin-plant-select"
+                    value={state.profile.plant_id}
+                    onChange={(e) => void switchPlant(e.target.value)}
+                    className="mt-1 w-full min-h-11 rounded-xl border border-zinc-200 bg-white px-3 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-zinc-900"
+                  >
+                    {state.orgPlants.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {(p.name ?? "Plant") +
+                          (p.location ? ` — ${p.location}` : "")}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+              <h1 className="text-2xl font-bold tracking-tight text-zinc-900 sm:text-3xl">
+                {plantTitle} — Admin Dashboard
+              </h1>
+              <p className="mt-1 text-sm font-semibold text-zinc-600">{orgTitle}</p>
+            </div>
+            <div className="flex flex-shrink-0 flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setNewPlantName("");
+                  setNewPlantLocation("");
+                  setAddPlantOpen(true);
+                }}
+                className="inline-flex min-h-12 items-center justify-center rounded-xl border border-indigo-200 bg-indigo-50 px-4 text-sm font-semibold text-indigo-900 shadow-sm hover:bg-indigo-100 active:scale-[0.99]"
+              >
+                Add Another Plant
+              </button>
+              <button
+                type="button"
+                onClick={() => void logout()}
+                className="inline-flex min-h-12 items-center justify-center rounded-xl border border-zinc-200 bg-white px-5 text-sm font-semibold text-zinc-900 shadow-sm hover:bg-zinc-50 active:scale-[0.99]"
+              >
+                Logout
+              </button>
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={() => void logout()}
-            className="inline-flex min-h-12 items-center justify-center rounded-xl border border-zinc-200 bg-white px-5 text-sm font-semibold text-zinc-900 shadow-sm hover:bg-zinc-50 active:scale-[0.99]"
-          >
-            Logout
-          </button>
         </header>
 
         {banner && (
@@ -908,6 +1150,49 @@ export default function AdminPage() {
           </div>
         </section>
       </div>
+
+      <Modal
+        open={addPlantOpen}
+        title="Add another plant"
+        onClose={() => {
+          setAddPlantOpen(false);
+          setNewPlantName("");
+          setNewPlantLocation("");
+        }}
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="text-sm font-semibold text-zinc-700">Plant name</label>
+            <input
+              value={newPlantName}
+              onChange={(e) => setNewPlantName(e.target.value)}
+              className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
+              placeholder="Delhi Plant"
+            />
+          </div>
+          <div>
+            <label className="text-sm font-semibold text-zinc-700">Location / city</label>
+            <input
+              value={newPlantLocation}
+              onChange={(e) => setNewPlantLocation(e.target.value)}
+              className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
+              placeholder="New Delhi"
+            />
+          </div>
+          <button
+            type="button"
+            disabled={savingNewPlant}
+            onClick={() => void submitAddPlant()}
+            className="inline-flex min-h-12 w-full items-center justify-center rounded-2xl bg-indigo-600 px-5 text-base font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:opacity-50"
+          >
+            {savingNewPlant ? "Creating..." : "Create plant & switch"}
+          </button>
+          <p className="text-xs text-zinc-500">
+            After creation, your dashboard will switch to this plant. Use the plant
+            selector above to move between plants anytime.
+          </p>
+        </div>
+      </Modal>
 
       {/* Add Zone modal */}
       <Modal open={zoneAddOpen} title="Add zone" onClose={() => setZoneAddOpen(false)}>
