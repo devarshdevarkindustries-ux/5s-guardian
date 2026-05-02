@@ -27,6 +27,14 @@ type LatestAudit = {
   completed_at: string | null;
 };
 
+type RecentZoneAudit = {
+  id: string;
+  completed_at: string | null;
+  score: number | null;
+  audit_type: string | null;
+  type: string | null;
+};
+
 type LoadState =
   | { status: "loading" }
   | { status: "error"; message: string }
@@ -37,6 +45,7 @@ type LoadState =
       zone: ZoneRow;
       stats: StatsRow;
       latestAudit: LatestAudit | null;
+      recentZoneAudits: RecentZoneAudit[];
       openNcrs: number;
       auditsThisWeek: number;
       plantRank: number;
@@ -114,6 +123,33 @@ function formatShortDate(iso: string) {
   }
 }
 
+function normalizeAuditKind(row: RecentZoneAudit): "self" | "cross" | "surprise" {
+  const raw = (row.audit_type ?? row.type ?? "self").toLowerCase();
+  if (raw === "surprise") return "surprise";
+  if (raw === "cross") return "cross";
+  return "self";
+}
+
+function auditKindBadge(kind: "self" | "cross" | "surprise") {
+  switch (kind) {
+    case "surprise":
+      return {
+        label: "Surprise",
+        className: "bg-rose-50 text-rose-800 ring-rose-200",
+      };
+    case "cross":
+      return {
+        label: "Cross",
+        className: "bg-amber-50 text-amber-900 ring-amber-200",
+      };
+    default:
+      return {
+        label: "Self",
+        className: "bg-blue-50 text-blue-800 ring-blue-200",
+      };
+  }
+}
+
 function dueTone(nextDueIso: string): "overdue" | "today" | "upcoming" {
   const due = startOfDay(new Date(nextDueIso));
   const today = startOfDay(new Date());
@@ -171,7 +207,7 @@ export default function DashboardPage() {
       const weekStart = startOfWeekLocal().toISOString();
       const xpDefault = 0;
 
-      const [statsRes, latestAuditRes, ncrsRes, auditsWeekRes] =
+      const [statsRes, latestAuditRes, recentZoneAuditsRes, ncrsRes, auditsWeekRes] =
         await Promise.all([
           supabase
             .from("zone_leader_stats")
@@ -185,6 +221,13 @@ export default function DashboardPage() {
             .order("completed_at", { ascending: false, nullsFirst: false })
             .limit(1)
             .maybeSingle(),
+          supabase
+            .from("audit_sessions")
+            .select("id,completed_at,score,audit_type,type")
+            .eq("zone_id", zone.id)
+            .not("completed_at", "is", null)
+            .order("completed_at", { ascending: false })
+            .limit(5),
           supabase
             .from("ncrs")
             .select("id", { count: "exact", head: true })
@@ -245,12 +288,17 @@ export default function DashboardPage() {
         ? null
         : (latestAuditRes.data as LatestAudit | null);
 
+      const recentZoneAudits = recentZoneAuditsRes.error
+        ? []
+        : ((recentZoneAuditsRes.data ?? []) as RecentZoneAudit[]);
+
       setState({
         status: "ready",
         displayName: profile.full_name,
         zone: zone as ZoneRow,
         stats: statsRow,
         latestAudit,
+        recentZoneAudits,
         openNcrs: ncrsRes.error ? 0 : ncrsRes.count ?? 0,
         auditsThisWeek,
         plantRank: higherXpCount + 1,
@@ -464,7 +512,65 @@ export default function DashboardPage() {
           )}
         </section>
 
-        {/* SECTION 3 — XP */}
+        {/* SECTION 3 — Recent audits on zone */}
+        <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm ring-1 ring-black/5 sm:p-6">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
+            Recent audits on my zone
+          </h2>
+          <p className="mt-1 text-xs text-zinc-500">
+            Includes self-audits, cross-audits, and surprise audits by anyone.
+          </p>
+          {state.recentZoneAudits.length === 0 ? (
+            <p className="mt-4 text-center text-sm font-medium text-zinc-500">
+              No completed audits yet.
+            </p>
+          ) : (
+            <ul className="mt-4 divide-y divide-zinc-100">
+              {state.recentZoneAudits.map((a) => {
+                const kind = normalizeAuditKind(a);
+                const badge = auditKindBadge(kind);
+                const when = a.completed_at ?? "";
+                const scoreNum =
+                  a.score != null && !Number.isNaN(Number(a.score))
+                    ? Math.round(Number(a.score))
+                    : null;
+                return (
+                  <li
+                    key={a.id}
+                    className="flex flex-wrap items-center justify-between gap-2 py-3 first:pt-0"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-zinc-900">
+                        {when ? formatShortDate(when) : "—"}
+                      </div>
+                      <div className="mt-1">
+                        <span
+                          className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${badge.className}`}
+                        >
+                          {badge.label}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="text-lg font-bold tabular-nums text-zinc-900">
+                      {scoreNum != null ? (
+                        <>
+                          {scoreNum}
+                          <span className="text-sm font-semibold text-zinc-400">
+                            /100
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-zinc-400">—</span>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+
+        {/* SECTION 4 — XP */}
         <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm ring-1 ring-black/5 sm:p-6">
           <div className="flex items-baseline justify-between gap-2">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
@@ -498,7 +604,7 @@ export default function DashboardPage() {
           )}
         </section>
 
-        {/* SECTION 4 — Stats */}
+        {/* SECTION 5 — Stats */}
         <section className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm ring-1 ring-black/5">
             <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
@@ -527,7 +633,7 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        {/* SECTION 5 — Audit CTA */}
+        {/* SECTION 6 — Audit CTA */}
         <section className="pb-4">
           {v.canStartAudit ? (
             <Link

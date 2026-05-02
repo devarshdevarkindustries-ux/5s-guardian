@@ -33,6 +33,13 @@ type ResolvedNcr = NcrLite & {
   org_id: string | null;
 };
 
+type PendingSurpriseAudit = {
+  id: string;
+  zone_id: string | null;
+  created_at: string | null;
+  zone_name: string | null;
+};
+
 type LoadState =
   | { status: "loading" }
   | { status: "error"; message: string }
@@ -43,6 +50,7 @@ type LoadState =
       ncrsRaised: number;
       openNcrsRaised: number;
       zones: ZoneWithAudit[];
+      pendingSurprise: PendingSurpriseAudit[];
       myNcrs: NcrLite[];
       resolvedPlant: ResolvedNcr[];
     };
@@ -146,6 +154,7 @@ export default function AuditorDashboardPage() {
       raisedRes,
       openRes,
       zonesRes,
+      surpriseRes,
       myNcrsRes,
       resolvedRes,
     ] = await Promise.all([
@@ -168,6 +177,13 @@ export default function AuditorDashboardPage() {
         .eq("plant_id", plantId)
         .order("name", { ascending: true }),
       supabase
+        .from("audit_sessions")
+        .select("id,zone_id,created_at")
+        .eq("conducted_by", userId)
+        .eq("audit_type", "surprise")
+        .is("completed_at", null)
+        .order("created_at", { ascending: false }),
+      supabase
         .from("ncrs")
         .select("id,title,status,severity,zone_id")
         .eq("raised_by", userId)
@@ -189,6 +205,7 @@ export default function AuditorDashboardPage() {
       raisedRes.error ??
       openRes.error ??
       zonesRes.error ??
+      surpriseRes.error ??
       myNcrsRes.error ??
       resolvedRes.error;
 
@@ -236,6 +253,18 @@ export default function AuditorDashboardPage() {
       };
     });
 
+    const zoneNameById = new Map(zoneList.map((z) => [z.id, z.name ?? null]));
+    const pendingSurprise: PendingSurpriseAudit[] = (
+      (surpriseRes.data ?? []) as {
+        id: string;
+        zone_id: string | null;
+        created_at: string | null;
+      }[]
+    ).map((row) => ({
+      ...row,
+      zone_name: row.zone_id ? zoneNameById.get(row.zone_id) ?? null : null,
+    }));
+
     setState({
       status: "ready",
       profile,
@@ -243,6 +272,7 @@ export default function AuditorDashboardPage() {
       ncrsRaised: raisedRes.count ?? 0,
       openNcrsRaised: openRes.count ?? 0,
       zones,
+      pendingSurprise,
       myNcrs: (myNcrsRes.data ?? []) as NcrLite[],
       resolvedPlant: (resolvedRes.data ?? []) as ResolvedNcr[],
     });
@@ -345,7 +375,7 @@ export default function AuditorDashboardPage() {
     );
   }
 
-  const { profile, zones, myNcrs, resolvedPlant } = state;
+  const { profile, zones, pendingSurprise, myNcrs, resolvedPlant } = state;
   const auditHref =
     selectedZone && zones.some((z) => z.id === selectedZone)
       ? `/audit?zone=${selectedZone}`
@@ -360,6 +390,46 @@ export default function AuditorDashboardPage() {
             {profile.full_name ?? "Auditor"}
           </p>
         </header>
+
+        <section aria-label="Pending surprise audits">
+          <h2 className="text-lg font-bold text-zinc-900">
+            Pending surprise audits
+          </h2>
+          <p className="mt-1 text-sm text-zinc-600">
+            Admin-assigned surprise audits you haven&apos;t finished yet.
+          </p>
+          {pendingSurprise.length === 0 ? (
+            <p className="mt-3 text-sm text-zinc-500">None pending.</p>
+          ) : (
+            <ul className="mt-4 space-y-3">
+              {pendingSurprise.map((p) => (
+                <li
+                  key={p.id}
+                  className="flex flex-col gap-3 rounded-2xl border border-rose-100 bg-rose-50/50 p-4 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div>
+                    <div className="font-semibold text-zinc-900">
+                      {p.zone_name ?? "Zone"}
+                    </div>
+                    <div className="text-xs text-zinc-600">
+                      Assigned {formatDate(p.created_at)}
+                    </div>
+                  </div>
+                  <Link
+                    href={
+                      p.zone_id
+                        ? `/audit?zone=${encodeURIComponent(p.zone_id)}&type=surprise`
+                        : "/audit"
+                    }
+                    className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-xl bg-rose-600 px-4 text-sm font-bold text-white hover:bg-rose-500"
+                  >
+                    Start Surprise Audit
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
 
         <section aria-label="Stats">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">

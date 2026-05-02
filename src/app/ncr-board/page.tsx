@@ -315,6 +315,7 @@ export default function NcrBoardPage() {
   }, [refresh]);
 
   const role = state.status === "ready" ? String(state.profile.role).toLowerCase() : "";
+  /** Only admins and auditors may raise NCRs; zone leaders / supervisors acknowledge & resolve only. */
   const canRaise = role === "admin" || role === "auditor";
   const canVerify = role === "admin" || role === "auditor";
   const canAckResolve = role === "zone_leader" || role === "supervisor";
@@ -538,6 +539,11 @@ export default function NcrBoardPage() {
 
   async function submitRaise() {
     if (state.status !== "ready") return;
+    const raiseRole = String(state.profile.role).toLowerCase();
+    if (raiseRole !== "admin" && raiseRole !== "auditor") {
+      alert("Only admins and auditors can raise NCRs.");
+      return;
+    }
     if (!raiseForm.zone_id || !raiseForm.title.trim() || !raiseForm.file) {
       alert("Zone, title, and before photo are required.");
       return;

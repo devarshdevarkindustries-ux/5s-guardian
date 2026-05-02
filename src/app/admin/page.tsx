@@ -259,6 +259,12 @@ export default function AdminPage() {
   const [newPlantLocation, setNewPlantLocation] = useState("");
   const [savingNewPlant, setSavingNewPlant] = useState(false);
 
+  const [surpriseOpen, setSurpriseOpen] = useState(false);
+  const [surpriseZoneId, setSurpriseZoneId] = useState("");
+  const [surpriseAuditorId, setSurpriseAuditorId] = useState("");
+  const [surpriseNotes, setSurpriseNotes] = useState("");
+  const [surpriseSaving, setSurpriseSaving] = useState(false);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -855,6 +861,60 @@ export default function AdminPage() {
   const plantTitle = state.profile.plant_name ?? "Plant";
   const orgTitle = state.profile.org_name ?? "Organisation";
 
+  const auditorsInPlant =
+    state.status === "ready"
+      ? state.users.filter(
+          (u) =>
+            String(u.role ?? "").toLowerCase() === "auditor" &&
+            u.plant_id === state.profile.plant_id,
+        )
+      : [];
+
+  async function submitSurpriseAudit() {
+    if (state.status !== "ready") return;
+    if (!surpriseZoneId || !surpriseAuditorId) {
+      setBanner("Choose a zone and an auditor.");
+      return;
+    }
+    const zoneRow = state.zones.find((z) => z.id === surpriseZoneId);
+    const auditorUser = state.users.find((u) => u.id === surpriseAuditorId);
+    if (!zoneRow || !auditorUser) {
+      setBanner("Invalid zone or auditor.");
+      return;
+    }
+    if (String(auditorUser.role ?? "").toLowerCase() !== "auditor") {
+      setBanner("Selected user must be an auditor.");
+      return;
+    }
+    setSurpriseSaving(true);
+    try {
+      const now = new Date().toISOString();
+      const { error } = await supabase.from("audit_sessions").insert({
+        zone_id: surpriseZoneId,
+        conducted_by: surpriseAuditorId,
+        org_id: zoneRow.org_id ?? state.profile.org_id,
+        plant_id: state.profile.plant_id,
+        audit_type: "surprise",
+        score: null,
+        completed_at: null,
+        created_at: now,
+      });
+      if (error) throw new Error(error.message);
+
+      setSurpriseOpen(false);
+      setSurpriseNotes("");
+      const auditorLabel = auditorUser.full_name ?? "Auditor";
+      const zoneLabel = zoneRow.name ?? "zone";
+      setBanner(
+        `Surprise audit assigned to ${auditorLabel} for ${zoneLabel}.`,
+      );
+    } catch (e) {
+      setBanner(e instanceof Error ? e.message : "Could not assign audit");
+    } finally {
+      setSurpriseSaving(false);
+    }
+  }
+
   return (
     <div className={shell}>
       <div className="mx-auto max-w-7xl space-y-8">
@@ -934,6 +994,32 @@ export default function AdminPage() {
               <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Open NCRs</div>
               <div className="mt-2 text-3xl font-bold tabular-nums text-amber-700">{state.stats.openNcrs}</div>
             </div>
+          </div>
+        </section>
+
+        <section aria-label="Surprise audits">
+          <div className="flex flex-col gap-3 rounded-2xl border border-rose-100 bg-rose-50/40 p-4 shadow-sm ring-1 ring-rose-100/80 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-base font-semibold text-zinc-900">
+                Surprise audits
+              </h2>
+              <p className="mt-1 text-sm text-zinc-600">
+                Assign an unannounced audit to an auditor for any zone in this
+                plant.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setSurpriseZoneId(state.zones[0]?.id ?? "");
+                setSurpriseAuditorId("");
+                setSurpriseNotes("");
+                setSurpriseOpen(true);
+              }}
+              className="inline-flex min-h-12 shrink-0 items-center justify-center rounded-xl bg-rose-600 px-5 text-sm font-bold text-white shadow-sm hover:bg-rose-500 active:scale-[0.99]"
+            >
+              Trigger Surprise Audit
+            </button>
           </div>
         </section>
 
@@ -1195,6 +1281,71 @@ export default function AdminPage() {
             After creation, your dashboard will switch to this plant. Use the plant
             selector above to move between plants anytime.
           </p>
+        </div>
+      </Modal>
+
+      <Modal
+        open={surpriseOpen}
+        title="Trigger surprise audit"
+        onClose={() => !surpriseSaving && setSurpriseOpen(false)}
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="text-sm font-semibold text-zinc-700">Zone</label>
+            <select
+              value={surpriseZoneId}
+              onChange={(e) => setSurpriseZoneId(e.target.value)}
+              className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-rose-500"
+            >
+              {state.status === "ready" &&
+                state.zones.map((z) => (
+                  <option key={z.id} value={z.id}>
+                    {z.name ?? "Unnamed zone"}
+                  </option>
+                ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-sm font-semibold text-zinc-700">Auditor</label>
+            <select
+              value={surpriseAuditorId}
+              onChange={(e) => setSurpriseAuditorId(e.target.value)}
+              className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-rose-500"
+            >
+              <option value="">Select auditor…</option>
+              {auditorsInPlant.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.full_name ?? "Auditor"}
+                </option>
+              ))}
+            </select>
+            {auditorsInPlant.length === 0 ? (
+              <p className="mt-2 text-xs text-amber-800">
+                No auditors with access to this plant. Add a user with role
+                Auditor first.
+              </p>
+            ) : null}
+          </div>
+          <div>
+            <label className="text-sm font-semibold text-zinc-700">
+              Notes (optional)
+            </label>
+            <textarea
+              value={surpriseNotes}
+              onChange={(e) => setSurpriseNotes(e.target.value)}
+              rows={3}
+              placeholder="Context for the auditor (shown only in success message)"
+              className="mt-1 w-full rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-900 shadow-sm outline-none focus:border-rose-500"
+            />
+          </div>
+          <button
+            type="button"
+            disabled={surpriseSaving || auditorsInPlant.length === 0}
+            onClick={() => void submitSurpriseAudit()}
+            className="inline-flex min-h-12 w-full items-center justify-center rounded-2xl bg-rose-600 px-5 text-base font-bold text-white shadow-sm hover:bg-rose-500 disabled:opacity-50"
+          >
+            {surpriseSaving ? "Assigning…" : "Assign surprise audit"}
+          </button>
         </div>
       </Modal>
 

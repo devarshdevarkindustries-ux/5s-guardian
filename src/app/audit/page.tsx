@@ -51,6 +51,9 @@ type ScreenState =
       items: AuditItem[];
       index: number;
       answers: Record<string, ResponseDraft>;
+      /** When set, complete this admin-assigned row instead of inserting. */
+      existingSessionId: string | null;
+      auditKind: "self" | "cross" | "surprise";
     }
   | {
       status: "submitting";
@@ -59,6 +62,8 @@ type ScreenState =
       template: AuditTemplate;
       items: AuditItem[];
       answers: Record<string, ResponseDraft>;
+      existingSessionId: string | null;
+      auditKind: "self" | "cross" | "surprise";
     }
   | {
       status: "done";
@@ -323,6 +328,8 @@ export default function AuditPage() {
         items,
         index: 0,
         answers: {},
+        existingSessionId: null,
+        auditKind: "self",
       });
     })();
 
@@ -381,6 +388,31 @@ export default function AuditPage() {
       return;
     }
 
+    const urlParams =
+      typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search)
+        : null;
+    const typeParam = (urlParams?.get("type") ?? "").toLowerCase();
+    const isSurpriseUrl = typeParam === "surprise";
+
+    let existingSessionId: string | null = null;
+    if (isSurpriseUrl) {
+      const { data: pending } = await supabase
+        .from("audit_sessions")
+        .select("id")
+        .eq("conducted_by", profile.id)
+        .eq("zone_id", zoneId)
+        .eq("audit_type", "surprise")
+        .is("completed_at", null)
+        .maybeSingle();
+      existingSessionId =
+        (pending as { id?: string } | null)?.id ?? null;
+    }
+
+    const auditKind: "cross" | "surprise" = isSurpriseUrl
+      ? "surprise"
+      : "cross";
+
     setState({
       status: "in_progress",
       profile,
@@ -389,6 +421,8 @@ export default function AuditPage() {
       items,
       index: 0,
       answers: {},
+      existingSessionId,
+      auditKind,
     });
   }
 
@@ -405,6 +439,10 @@ export default function AuditPage() {
     template: AuditTemplate,
     items: AuditItem[],
     answers: Record<string, ResponseDraft>,
+    opts: {
+      existingSessionId: string | null;
+      auditKind: "self" | "cross" | "surprise";
+    },
   ) {
     const total = items.length;
     const sumScores = items.reduce((acc, item) => {
@@ -416,7 +454,11 @@ export default function AuditPage() {
       total === 0 ? 0 : (sumScores / (Math.max(1, total) * 4)) * 100;
     const xpEarned = score >= 80 ? 80 : 50;
     const role = String(profile.role ?? "").toLowerCase();
-    const auditType = role === "auditor" ? "cross" : "self";
+
+    let auditTypeDb: string;
+    if (opts.auditKind === "surprise") auditTypeDb = "surprise";
+    else if (role === "auditor") auditTypeDb = "cross";
+    else auditTypeDb = "self";
 
     const orgId = zone.org_id ?? profile.org_id;
     const plantId = zone.plant_id ?? profile.plant_id;
@@ -425,49 +467,77 @@ export default function AuditPage() {
       throw new Error("Missing org_id or plant_id for this audit.");
     }
 
-    const sessionPayload: Record<string, unknown> = {
-      zone_id: zone.id,
-      conducted_by: profile.id,
-      template_id: template.id,
-      org_id: orgId,
-      plant_id: plantId,
-      audit_type: auditType,
-      score,
-      xp_earned: xpEarned,
-      completed_at: new Date().toISOString(),
-    };
+    const completedAt = new Date().toISOString();
 
     let sessionId: string;
-    const ins1 = await supabase
-      .from("audit_sessions")
-      .insert(sessionPayload)
-      .select("id")
-      .single();
 
-    if (ins1.error || !ins1.data) {
-      const ins2 = await supabase
+    if (opts.existingSessionId) {
+      const upd = await supabase
         .from("audit_sessions")
-        .insert({
-          zone_id: zone.id,
-          conducted_by: profile.id,
+        .update({
           template_id: template.id,
-          org_id: orgId,
-          plant_id: plantId,
-          type: auditType,
+          audit_type: "surprise",
           score,
           xp_earned: xpEarned,
-          completed_at: sessionPayload.completed_at,
+          completed_at: completedAt,
         })
+        .eq("id", opts.existingSessionId)
         .select("id")
         .single();
-      if (ins2.error || !ins2.data) {
+
+      if (upd.error || !upd.data) {
         throw new Error(
-          ins1.error?.message ?? ins2.error?.message ?? "Could not create audit session",
+          upd.error?.message ?? "Could not update surprise audit session.",
         );
       }
-      sessionId = (ins2.data as { id: string }).id;
+      sessionId = (upd.data as { id: string }).id;
     } else {
-      sessionId = (ins1.data as { id: string }).id;
+      const sessionPayload: Record<string, unknown> = {
+        zone_id: zone.id,
+        conducted_by: profile.id,
+        template_id: template.id,
+        org_id: orgId,
+        plant_id: plantId,
+        audit_type: auditTypeDb,
+        score,
+        xp_earned: xpEarned,
+        completed_at: completedAt,
+      };
+
+      const ins1 = await supabase
+        .from("audit_sessions")
+        .insert(sessionPayload)
+        .select("id")
+        .single();
+
+      if (ins1.error || !ins1.data) {
+        const ins2 = await supabase
+          .from("audit_sessions")
+          .insert({
+            zone_id: zone.id,
+            conducted_by: profile.id,
+            template_id: template.id,
+            org_id: orgId,
+            plant_id: plantId,
+            type: auditTypeDb,
+            audit_type: auditTypeDb,
+            score,
+            xp_earned: xpEarned,
+            completed_at: completedAt,
+          })
+          .select("id")
+          .single();
+        if (ins2.error || !ins2.data) {
+          throw new Error(
+            ins1.error?.message ??
+              ins2.error?.message ??
+              "Could not create audit session",
+          );
+        }
+        sessionId = (ins2.data as { id: string }).id;
+      } else {
+        sessionId = (ins1.data as { id: string }).id;
+      }
     }
 
     const photoUrlByItemId = new Map<string, string>();
@@ -791,6 +861,13 @@ export default function AuditPage() {
     const nextIndex = index + 1;
 
     if (nextIndex >= items.length) {
+      const snap = state;
+      if (snap.status !== "in_progress") return;
+      const submitOpts = {
+        existingSessionId: snap.existingSessionId,
+        auditKind: snap.auditKind,
+      };
+
       setState({
         status: "submitting",
         profile: leader,
@@ -798,6 +875,8 @@ export default function AuditPage() {
         template,
         items,
         answers: nextAnswers,
+        existingSessionId: snap.existingSessionId,
+        auditKind: snap.auditKind,
       });
 
       void (async () => {
@@ -808,6 +887,7 @@ export default function AuditPage() {
             template,
             items,
             nextAnswers,
+            submitOpts,
           );
           setState({
             status: "done",
