@@ -7,8 +7,8 @@ import { getCurrentUser, getRoleHomeRoute } from "@/lib/auth";
 
 export default function ChangePasswordPage() {
   const router = useRouter();
-  const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
+  const [initialLoad, setInitialLoad] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -26,59 +26,74 @@ export default function ChangePasswordPage() {
         router.replace(getRoleHomeRoute(profile.role));
         return;
       }
-      setLoading(false);
+      setInitialLoad(false);
     })();
     return () => {
       cancelled = true;
     };
   }, [router]);
 
-  async function onSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setLoading(true);
     setError(null);
 
     if (newPassword.length < 8) {
       setError("Password must be at least 8 characters.");
+      setLoading(false);
       return;
     }
     if (newPassword !== confirmPassword) {
       setError("Passwords do not match.");
+      setLoading(false);
       return;
     }
 
-    setSubmitting(true);
     try {
-      const profile = await getCurrentUser();
-      if (!profile) {
-        router.replace("/login");
+      const { error: updateError } = await supabase.auth.updateUser({
+        password: newPassword,
+      });
+      if (updateError) {
+        setError(updateError.message);
+        setLoading(false);
         return;
       }
 
-      const { error: updateAuthErr } = await supabase.auth.updateUser({
-        password: newPassword,
-      });
-      if (updateAuthErr) {
-        throw new Error(updateAuthErr.message);
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        setError("Session lost. Please log in again.");
+        setLoading(false);
+        return;
       }
 
-      const { error: profileErr } = await supabase
+      const { error: profileUpdateError } = await supabase
         .from("user_profiles")
         .update({ force_password_change: false })
-        .eq("id", profile.id);
-      if (profileErr) {
-        throw new Error(profileErr.message);
+        .eq("id", user.id);
+      if (profileUpdateError) {
+        setError(profileUpdateError.message);
+        setLoading(false);
+        return;
       }
 
-      router.refresh();
-      router.replace(getRoleHomeRoute(profile.role));
+      const { data: profile } = await supabase
+        .from("user_profiles")
+        .select("role")
+        .eq("id", user.id)
+        .single();
+
+      const route = getRoleHomeRoute(profile?.role ?? "");
+
+      window.location.href = route;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update password.");
-    } finally {
-      setSubmitting(false);
+      setError(err instanceof Error ? err.message : "Something went wrong");
+      setLoading(false);
     }
   }
 
-  if (loading) {
+  if (initialLoad) {
     return (
       <div className="min-h-screen bg-gradient-to-b from-zinc-100 to-zinc-200/80 px-4 py-10">
         <div className="mx-auto flex max-w-md justify-center py-20">
@@ -105,7 +120,7 @@ export default function ChangePasswordPage() {
             </div>
           )}
 
-          <form onSubmit={onSubmit} className="mt-6 space-y-4">
+          <form onSubmit={handleSubmit} className="mt-6 space-y-4">
             <div>
               <label className="text-sm font-semibold text-zinc-700">
                 New password
@@ -138,10 +153,10 @@ export default function ChangePasswordPage() {
 
             <button
               type="submit"
-              disabled={submitting}
+              disabled={loading}
               className="inline-flex min-h-12 w-full items-center justify-center rounded-2xl bg-zinc-900 px-5 text-base font-semibold text-white shadow-sm hover:bg-zinc-800 disabled:opacity-50 active:scale-[0.99]"
             >
-              {submitting ? "Saving..." : "Set new password"}
+              {loading ? "Saving..." : "Set new password"}
             </button>
           </form>
         </div>
