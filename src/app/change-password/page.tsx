@@ -10,7 +10,6 @@ export default function ChangePasswordPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
@@ -39,11 +38,11 @@ export default function ChangePasswordPage() {
     setError(null);
 
     if (newPassword.length < 8) {
-      setError("New password must be at least 8 characters.");
+      setError("Password must be at least 8 characters.");
       return;
     }
     if (newPassword !== confirmPassword) {
-      setError("New password and confirmation do not match.");
+      setError("Passwords do not match.");
       return;
     }
 
@@ -53,22 +52,6 @@ export default function ChangePasswordPage() {
       if (!profile) {
         router.replace("/login");
         return;
-      }
-
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      const email = user?.email;
-      if (!email) {
-        throw new Error("No email on session.");
-      }
-
-      const { error: verifyErr } = await supabase.auth.signInWithPassword({
-        email,
-        password: currentPassword,
-      });
-      if (verifyErr) {
-        throw new Error("Current password is incorrect.");
       }
 
       const { error: updateAuthErr } = await supabase.auth.updateUser({
@@ -110,10 +93,10 @@ export default function ChangePasswordPage() {
       <div className="mx-auto w-full max-w-md">
         <div className="rounded-2xl border border-black/5 bg-white p-6 shadow-lg shadow-black/5 sm:p-8">
           <h1 className="text-center text-xl font-bold tracking-tight text-zinc-900 sm:text-2xl">
-            Welcome! Please set your new password
+            Set your new password
           </h1>
           <p className="mt-2 text-center text-sm text-zinc-600">
-            Your administrator shared a temporary password. Choose a new one to continue.
+            Your administrator created this account. Please set a secure password to continue.
           </p>
 
           {error && (
@@ -123,19 +106,6 @@ export default function ChangePasswordPage() {
           )}
 
           <form onSubmit={onSubmit} className="mt-6 space-y-4">
-            <div>
-              <label className="text-sm font-semibold text-zinc-700">
-                Current password
-              </label>
-              <input
-                type="password"
-                value={currentPassword}
-                onChange={(e) => setCurrentPassword(e.target.value)}
-                className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-zinc-900"
-                required
-                autoComplete="current-password"
-              />
-            </div>
             <div>
               <label className="text-sm font-semibold text-zinc-700">
                 New password
