@@ -29,16 +29,6 @@ type UserProfileRow = {
   is_active: boolean | null;
 };
 
-type PendingInviteRow = {
-  id: string;
-  email: string;
-  full_name: string | null;
-  org_id: string | null;
-  role: string;
-  slug: string | null;
-  created_at: string | null;
-};
-
 type LoadState =
   | { status: "loading" }
   | { status: "error"; message: string }
@@ -135,9 +125,16 @@ export default function SuperAdminPage() {
   const [creatingOrg, setCreatingOrg] = useState(false);
 
   const [createdOrg, setCreatedOrg] = useState<OrganisationRow | null>(null);
-  const [inviteName, setInviteName] = useState("");
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviting, setInviting] = useState(false);
+  const [orgAdminName, setOrgAdminName] = useState("");
+  const [orgAdminEmail, setOrgAdminEmail] = useState("");
+  const [orgAdminPassword, setOrgAdminPassword] = useState("");
+  const [orgAdminConfirm, setOrgAdminConfirm] = useState("");
+  const [showOrgAdminPassword, setShowOrgAdminPassword] = useState(false);
+  const [creatingOrgAdmin, setCreatingOrgAdmin] = useState(false);
+  const [orgAdminCredentials, setOrgAdminCredentials] = useState<{
+    email: string;
+    password: string;
+  } | null>(null);
 
   const [banner, setBanner] = useState<string | null>(null);
 
@@ -285,37 +282,57 @@ export default function SuperAdminPage() {
     }
   }
 
-  async function sendAdminInvite() {
+  async function createOrgAdminUser() {
     if (!createdOrg) return;
-    if (!inviteEmail.trim()) return;
-    setInviting(true);
+    if (!orgAdminEmail.trim() || !orgAdminName.trim()) return;
+    if (orgAdminPassword.length < 8) {
+      setBanner("Temporary password must be at least 8 characters.");
+      return;
+    }
+    if (orgAdminPassword !== orgAdminConfirm) {
+      setBanner("Passwords do not match.");
+      return;
+    }
+    setCreatingOrgAdmin(true);
     try {
-      const email = inviteEmail.trim().toLowerCase();
-
-      const res = await fetch("/api/invite", {
+      const email = orgAdminEmail.trim().toLowerCase();
+      const res = await fetch("/api/create-user", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email,
-          fullName: inviteName.trim() || "",
+          password: orgAdminPassword,
+          fullName: orgAdminName.trim(),
           role: "admin",
           orgId: createdOrg.id,
         }),
       });
-      const data = (await res.json()) as { success?: boolean; error?: string };
+      const data = (await res.json()) as {
+        success?: boolean;
+        error?: string;
+      };
       if (!res.ok || !data.success) {
-        throw new Error(data.error ?? "Invite failed");
+        throw new Error(data.error ?? "Failed to create user");
       }
 
-      setBanner(`Invite sent to ${email}`);
-      setInviteEmail("");
-      setInviteName("");
-
+      setOrgAdminCredentials({ email, password: orgAdminPassword });
+      setBanner(`Admin user created for ${createdOrg.name ?? "organisation"}`);
       await refreshAll();
     } catch (e) {
-      setBanner(e instanceof Error ? e.message : "Failed to invite admin user.");
+      setBanner(e instanceof Error ? e.message : "Failed to create admin user.");
     } finally {
-      setInviting(false);
+      setCreatingOrgAdmin(false);
+    }
+  }
+
+  async function copyOrgAdminCredentials() {
+    if (!orgAdminCredentials) return;
+    const text = `Email: ${orgAdminCredentials.email}\nPassword: ${orgAdminCredentials.password}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setBanner("Credentials copied to clipboard.");
+    } catch {
+      setBanner("Could not copy — copy manually from the card.");
     }
   }
 
@@ -379,8 +396,12 @@ export default function SuperAdminPage() {
                 setOrgName("");
                 setOrgSlug("");
                 setSlugTouched(false);
-                setInviteName("");
-                setInviteEmail("");
+                setOrgAdminName("");
+                setOrgAdminEmail("");
+                setOrgAdminPassword("");
+                setOrgAdminConfirm("");
+                setOrgAdminCredentials(null);
+                setShowOrgAdminPassword(false);
                 setAddOpen(true);
               }}
               className="inline-flex min-h-12 items-center justify-center rounded-xl bg-indigo-600 px-5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 active:scale-[0.99]"
@@ -565,8 +586,12 @@ export default function SuperAdminPage() {
           setOrgName("");
           setOrgSlug("");
           setSlugTouched(false);
-          setInviteName("");
-          setInviteEmail("");
+          setOrgAdminName("");
+          setOrgAdminEmail("");
+          setOrgAdminPassword("");
+          setOrgAdminConfirm("");
+          setOrgAdminCredentials(null);
+          setShowOrgAdminPassword(false);
         }}
       >
         {!createdOrg ? (
@@ -627,52 +652,141 @@ export default function SuperAdminPage() {
               </div>
             </div>
 
-            <div>
-              <div className="text-base font-semibold text-zinc-900">
-                Create Admin User
+            {orgAdminCredentials ? (
+              <div className="space-y-4 rounded-2xl border border-emerald-300 bg-emerald-50 p-4 text-emerald-950 shadow-sm">
+                <div className="font-semibold text-emerald-900">
+                  ✓ Admin user created successfully!
+                </div>
+                <p className="text-sm leading-relaxed text-emerald-900/90">
+                  Share these credentials securely (via WhatsApp):
+                </p>
+                <div className="rounded-xl border border-emerald-200 bg-white px-3 py-2 text-sm">
+                  <div>
+                    📧 Email:{" "}
+                    <span className="font-mono font-semibold">
+                      {orgAdminCredentials.email}
+                    </span>
+                  </div>
+                  <div className="mt-1">
+                    🔑 Password:{" "}
+                    <span className="font-mono font-semibold">
+                      {orgAdminCredentials.password}
+                    </span>
+                  </div>
+                </div>
+                <p className="text-xs text-emerald-800">
+                  User must change password on first login.
+                </p>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <button
+                    type="button"
+                    onClick={() => void copyOrgAdminCredentials()}
+                    className="inline-flex min-h-11 flex-1 items-center justify-center rounded-xl bg-emerald-700 px-4 text-sm font-semibold text-white shadow-sm hover:bg-emerald-600"
+                  >
+                    Copy credentials
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOrgAdminCredentials(null);
+                      setOrgAdminName("");
+                      setOrgAdminEmail("");
+                      setOrgAdminPassword("");
+                      setOrgAdminConfirm("");
+                    }}
+                    className="inline-flex min-h-11 flex-1 items-center justify-center rounded-xl border border-emerald-300 bg-white px-4 text-sm font-semibold text-emerald-900 shadow-sm hover:bg-emerald-100/80"
+                  >
+                    Create another
+                  </button>
+                </div>
               </div>
-              <div className="mt-1 text-sm text-zinc-600">
-                We store the invite in{" "}
-                <span className="font-mono">pending_invites</span>, send a magic link,
-                and create the <span className="font-mono">user_profiles</span> row after
-                they sign in.
-              </div>
-            </div>
+            ) : (
+              <>
+                <div>
+                  <div className="text-base font-semibold text-zinc-900">
+                    Create admin user
+                  </div>
+                  <div className="mt-1 text-sm text-zinc-600">
+                    Set a temporary password and share login details with your admin (e.g.
+                    WhatsApp). They will be asked to choose a new password on first sign-in.
+                  </div>
+                </div>
 
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <label className="text-sm font-semibold text-zinc-700">
-                  Full name
-                </label>
-                <input
-                  value={inviteName}
-                  onChange={(e) => setInviteName(e.target.value)}
-                  className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
-                  placeholder="Plant Admin"
-                />
-              </div>
-              <div>
-                <label className="text-sm font-semibold text-zinc-700">
-                  Email
-                </label>
-                <input
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
-                  placeholder="admin@acme.com"
-                  type="email"
-                />
-              </div>
-            </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="sm:col-span-2">
+                    <label className="text-sm font-semibold text-zinc-700">
+                      Full name
+                    </label>
+                    <input
+                      value={orgAdminName}
+                      onChange={(e) => setOrgAdminName(e.target.value)}
+                      className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
+                      placeholder="Plant Admin"
+                      autoComplete="name"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="text-sm font-semibold text-zinc-700">
+                      Email
+                    </label>
+                    <input
+                      value={orgAdminEmail}
+                      onChange={(e) => setOrgAdminEmail(e.target.value)}
+                      className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
+                      placeholder="admin@acme.com"
+                      type="email"
+                      autoComplete="email"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-sm font-semibold text-zinc-700">
+                        Temporary password
+                      </label>
+                      <button
+                        type="button"
+                        className="text-xs font-semibold text-indigo-700 hover:underline"
+                        onClick={() => setShowOrgAdminPassword((v) => !v)}
+                      >
+                        {showOrgAdminPassword ? "Hide" : "Show"}
+                      </button>
+                    </div>
+                    <input
+                      type={showOrgAdminPassword ? "text" : "password"}
+                      value={orgAdminPassword}
+                      onChange={(e) => setOrgAdminPassword(e.target.value)}
+                      className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
+                      placeholder="Minimum 8 characters"
+                      minLength={8}
+                      autoComplete="new-password"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="text-sm font-semibold text-zinc-700">
+                      Confirm password
+                    </label>
+                    <input
+                      type={showOrgAdminPassword ? "text" : "password"}
+                      value={orgAdminConfirm}
+                      onChange={(e) => setOrgAdminConfirm(e.target.value)}
+                      className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
+                      placeholder="Repeat temporary password"
+                      minLength={8}
+                      autoComplete="new-password"
+                    />
+                  </div>
+                </div>
 
-            <button
-              type="button"
-              disabled={inviting}
-              onClick={() => void sendAdminInvite()}
-              className="inline-flex min-h-12 w-full items-center justify-center rounded-2xl bg-zinc-900 px-5 text-base font-semibold text-white shadow-sm hover:bg-zinc-800 disabled:opacity-50"
-            >
-              {inviting ? "Sending..." : `Send invite link to ${inviteEmail || "email"}`}
-            </button>
+                <button
+                  type="button"
+                  disabled={creatingOrgAdmin}
+                  onClick={() => void createOrgAdminUser()}
+                  className="inline-flex min-h-12 w-full items-center justify-center rounded-2xl bg-zinc-900 px-5 text-base font-semibold text-white shadow-sm hover:bg-zinc-800 disabled:opacity-50"
+                >
+                  {creatingOrgAdmin ? "Creating..." : "Create admin user"}
+                </button>
+              </>
+            )}
           </div>
         )}
       </Modal>

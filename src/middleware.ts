@@ -60,12 +60,20 @@ export async function middleware(request: NextRequest) {
 
   const { data: profile } = await supabase
     .from('user_profiles')
-    .select('id')
+    .select('id, force_password_change')
     .eq('id', user.id)
     .maybeSingle()
 
   if (!profile) {
     return NextResponse.redirect(new URL('/onboarding', request.url))
+  }
+
+  if (pathname === '/change-password') {
+    return response
+  }
+
+  if (profile.force_password_change) {
+    return NextResponse.redirect(new URL('/change-password', request.url))
   }
 
   return response

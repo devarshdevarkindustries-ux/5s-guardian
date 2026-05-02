@@ -30,9 +30,11 @@ export default function LoginPage() {
       if (signInError) throw new Error(signInError.message);
 
       const profile = await getCurrentUser();
-      const home = profile
-        ? getRoleHomeRoute(profile.role)
-        : "/onboarding";
+      const home = !profile
+        ? "/onboarding"
+        : profile.force_password_change
+          ? "/change-password"
+          : getRoleHomeRoute(profile.role);
       router.refresh();
       router.push(home);
       setTimeout(() => {

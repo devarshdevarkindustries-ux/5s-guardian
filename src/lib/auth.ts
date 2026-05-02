@@ -20,6 +20,7 @@ export type UserProfile = {
   org_name: string | null
   plant_name: string | null
   is_active: boolean
+  force_password_change: boolean
 }
 
 export async function getCurrentUser(): Promise<UserProfile | null> {
@@ -35,6 +36,7 @@ export async function getCurrentUser(): Promise<UserProfile | null> {
       org_id,
       plant_id,
       is_active,
+      force_password_change,
       organisations(name),
       plants(name)
     `)
@@ -50,6 +52,7 @@ export async function getCurrentUser(): Promise<UserProfile | null> {
     org_id: profile.org_id,
     plant_id: profile.plant_id,
     is_active: profile.is_active,
+    force_password_change: Boolean(profile.force_password_change),
     org_name: (profile.organisations as any)?.name ?? null,
     plant_name: (profile.plants as any)?.name ?? null,
   }

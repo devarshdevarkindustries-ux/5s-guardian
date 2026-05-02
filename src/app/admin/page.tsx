@@ -79,6 +79,8 @@ type ZoneForm = {
 type AddUserForm = {
   full_name: string;
   email: string;
+  password: string;
+  confirmPassword: string;
   role: "auditor" | "zone_leader" | "supervisor";
   zone_id: string | "";
 };
@@ -208,9 +210,16 @@ export default function AdminPage() {
   const [userForm, setUserForm] = useState<AddUserForm>({
     full_name: "",
     email: "",
+    password: "",
+    confirmPassword: "",
     role: "auditor",
     zone_id: "",
   });
+  const [showUserPassword, setShowUserPassword] = useState(false);
+  const [userCreatedCredentials, setUserCreatedCredentials] = useState<{
+    email: string;
+    password: string;
+  } | null>(null);
   const [savingUser, setSavingUser] = useState(false);
 
   const [banner, setBanner] = useState<string | null>(null);
@@ -378,12 +387,15 @@ export default function AdminPage() {
       .filter((u) => (u.role ?? "").toLowerCase() === "zone_leader")
       .map((u) => ({ id: u.id, name: u.full_name ?? "Zone leader" }));
 
+    const zonesWithoutLeader = state.zones.filter((z) => !z.leader_id);
+
     return {
       leaderNameById,
       latestAuditByZone,
       zoneNameById,
       zoneByLeaderId,
       zoneLeaders,
+      zonesWithoutLeader,
     };
   }, [state]);
 
@@ -486,21 +498,55 @@ export default function AdminPage() {
     }
   }
 
+  function openAddUserModal() {
+    setUserForm({
+      full_name: "",
+      email: "",
+      password: "",
+      confirmPassword: "",
+      role: "auditor",
+      zone_id: "",
+    });
+    setShowUserPassword(false);
+    setUserCreatedCredentials(null);
+    setUserAddOpen(true);
+  }
+
+  async function copyUserCredentials() {
+    if (!userCreatedCredentials) return;
+    const text = `Email: ${userCreatedCredentials.email}\nPassword: ${userCreatedCredentials.password}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setBanner("Credentials copied to clipboard.");
+    } catch {
+      setBanner("Could not copy — copy manually from the card.");
+    }
+  }
+
   async function addUser() {
     if (state.status !== "ready") return;
     if (!userForm.email.trim()) return;
     if (!userForm.full_name.trim()) return;
     if (userForm.role === "zone_leader" && !userForm.zone_id) return;
+    if (userForm.password.length < 8) {
+      setBanner("Temporary password must be at least 8 characters.");
+      return;
+    }
+    if (userForm.password !== userForm.confirmPassword) {
+      setBanner("Passwords do not match.");
+      return;
+    }
 
     setSavingUser(true);
     try {
       const email = userForm.email.trim().toLowerCase();
 
-      const res = await fetch("/api/invite", {
+      const res = await fetch("/api/create-user", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email,
+          password: userForm.password,
           fullName: userForm.full_name.trim(),
           role: userForm.role,
           orgId: state.profile.org_id,
@@ -513,12 +559,44 @@ export default function AdminPage() {
       });
       const data = (await res.json()) as { success?: boolean; error?: string };
       if (!res.ok || !data.success) {
-        throw new Error(data.error ?? "Invite failed");
+        throw new Error(data.error ?? "Failed to create user");
       }
 
-      setBanner(`Invite sent to ${email}`);
-      setUserAddOpen(false);
-      setUserForm({ full_name: "", email: "", role: "auditor", zone_id: "" });
+      setUserCreatedCredentials({ email, password: userForm.password });
+      setBanner(`User created: ${email}`);
+      setUserForm({
+        full_name: "",
+        email: "",
+        password: "",
+        confirmPassword: "",
+        role: "auditor",
+        zone_id: "",
+      });
+
+      const usersRes = await supabase
+        .from("user_profiles")
+        .select("id,full_name,role,org_id,plant_id,is_active,created_at")
+        .eq("plant_id", state.profile.plant_id)
+        .order("created_at", { ascending: false });
+      const zonesRes = await supabase
+        .from("zones")
+        .select(
+          "id,name,department,audit_frequency,leader_id,org_id,plant_id,created_at",
+        )
+        .eq("plant_id", state.profile.plant_id)
+        .order("name", { ascending: true });
+
+      if (usersRes.error) throw new Error(usersRes.error.message);
+      if (zonesRes.error) throw new Error(zonesRes.error.message);
+
+      setState((s) => {
+        if (s.status !== "ready") return s;
+        return {
+          ...s,
+          users: (usersRes.data ?? []) as UserProfileRow[],
+          zones: (zonesRes.data ?? []) as ZoneRow[],
+        };
+      });
     } catch (e) {
       setBanner(e instanceof Error ? e.message : "Failed to add user.");
     } finally {
@@ -692,7 +770,7 @@ export default function AdminPage() {
             <h2 className="text-lg font-semibold text-zinc-900">Team</h2>
             <button
               type="button"
-              onClick={() => setUserAddOpen(true)}
+              onClick={openAddUserModal}
               className="inline-flex min-h-10 items-center justify-center rounded-xl bg-indigo-600 px-4 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 active:scale-[0.99]"
             >
               Add User
@@ -956,70 +1034,190 @@ export default function AdminPage() {
       </Modal>
 
       {/* Add User modal */}
-      <Modal open={userAddOpen} title="Add user" onClose={() => setUserAddOpen(false)}>
-        <div className="space-y-4">
-          <div>
-            <label className="text-sm font-semibold text-zinc-700">Full name</label>
-            <input
-              value={userForm.full_name}
-              onChange={(e) => setUserForm((s) => ({ ...s, full_name: e.target.value }))}
-              className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
-              placeholder="Alex Supervisor"
-            />
-          </div>
-          <div>
-            <label className="text-sm font-semibold text-zinc-700">Email</label>
-            <input
-              type="email"
-              value={userForm.email}
-              onChange={(e) => setUserForm((s) => ({ ...s, email: e.target.value }))}
-              className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
-              placeholder="name@company.com"
-            />
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label className="text-sm font-semibold text-zinc-700">Role</label>
-              <select
-                value={userForm.role}
-                onChange={(e) => setUserForm((s) => ({ ...s, role: e.target.value as AddUserForm["role"] }))}
-                className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
-              >
-                <option value="auditor">auditor</option>
-                <option value="zone_leader">zone_leader</option>
-                <option value="supervisor">supervisor</option>
-              </select>
+      <Modal
+        open={userAddOpen}
+        title="Add user"
+        onClose={() => {
+          setUserAddOpen(false);
+          setUserCreatedCredentials(null);
+          setUserForm({
+            full_name: "",
+            email: "",
+            password: "",
+            confirmPassword: "",
+            role: "auditor",
+            zone_id: "",
+          });
+          setShowUserPassword(false);
+        }}
+      >
+        {userCreatedCredentials ? (
+          <div className="space-y-4 rounded-2xl border border-emerald-300 bg-emerald-50 p-4 text-emerald-950 shadow-sm">
+            <div className="font-semibold text-emerald-900">
+              ✓ User created successfully!
             </div>
-            {userForm.role === "zone_leader" ? (
+            <p className="text-sm leading-relaxed text-emerald-900/90">
+              Share these credentials securely (via WhatsApp):
+            </p>
+            <div className="rounded-xl border border-emerald-200 bg-white px-3 py-2 text-sm">
               <div>
-                <label className="text-sm font-semibold text-zinc-700">Assign to zone</label>
+                📧 Email:{" "}
+                <span className="font-mono font-semibold">
+                  {userCreatedCredentials.email}
+                </span>
+              </div>
+              <div className="mt-1">
+                🔑 Password:{" "}
+                <span className="font-mono font-semibold">
+                  {userCreatedCredentials.password}
+                </span>
+              </div>
+            </div>
+            <p className="text-xs text-emerald-800">
+              User must change password on first login.
+            </p>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <button
+                type="button"
+                onClick={() => void copyUserCredentials()}
+                className="inline-flex min-h-11 flex-1 items-center justify-center rounded-xl bg-emerald-700 px-4 text-sm font-semibold text-white shadow-sm hover:bg-emerald-600"
+              >
+                Copy credentials
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setUserCreatedCredentials(null);
+                  setUserForm({
+                    full_name: "",
+                    email: "",
+                    password: "",
+                    confirmPassword: "",
+                    role: "auditor",
+                    zone_id: "",
+                  });
+                }}
+                className="inline-flex min-h-11 flex-1 items-center justify-center rounded-xl border border-emerald-300 bg-white px-4 text-sm font-semibold text-emerald-900 shadow-sm hover:bg-emerald-100/80"
+              >
+                Add another
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div>
+              <label className="text-sm font-semibold text-zinc-700">Full name</label>
+              <input
+                value={userForm.full_name}
+                onChange={(e) => setUserForm((s) => ({ ...s, full_name: e.target.value }))}
+                className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
+                placeholder="Alex Supervisor"
+                autoComplete="name"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-semibold text-zinc-700">Email</label>
+              <input
+                type="email"
+                value={userForm.email}
+                onChange={(e) => setUserForm((s) => ({ ...s, email: e.target.value }))}
+                className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
+                placeholder="name@company.com"
+                autoComplete="email"
+              />
+            </div>
+            <div>
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-sm font-semibold text-zinc-700">
+                  Temporary password
+                </label>
+                <button
+                  type="button"
+                  className="text-xs font-semibold text-indigo-700 hover:underline"
+                  onClick={() => setShowUserPassword((v) => !v)}
+                >
+                  {showUserPassword ? "Hide" : "Show"}
+                </button>
+              </div>
+              <input
+                type={showUserPassword ? "text" : "password"}
+                value={userForm.password}
+                onChange={(e) => setUserForm((s) => ({ ...s, password: e.target.value }))}
+                className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
+                placeholder="Minimum 8 characters"
+                minLength={8}
+                autoComplete="new-password"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-semibold text-zinc-700">Confirm password</label>
+              <input
+                type={showUserPassword ? "text" : "password"}
+                value={userForm.confirmPassword}
+                onChange={(e) =>
+                  setUserForm((s) => ({ ...s, confirmPassword: e.target.value }))
+                }
+                className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
+                placeholder="Repeat temporary password"
+                minLength={8}
+                autoComplete="new-password"
+              />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <label className="text-sm font-semibold text-zinc-700">Role</label>
                 <select
-                  value={userForm.zone_id}
-                  onChange={(e) => setUserForm((s) => ({ ...s, zone_id: e.target.value }))}
+                  value={userForm.role}
+                  onChange={(e) =>
+                    setUserForm((s) => ({
+                      ...s,
+                      role: e.target.value as AddUserForm["role"],
+                      zone_id: "",
+                    }))
+                  }
                   className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
                 >
-                  <option value="">Select a zone</option>
-                  {state.zones.map((z) => (
-                    <option key={z.id} value={z.id}>
-                      {z.name ?? "Unnamed zone"}
-                    </option>
-                  ))}
+                  <option value="auditor">auditor</option>
+                  <option value="zone_leader">zone_leader</option>
+                  <option value="supervisor">supervisor</option>
                 </select>
               </div>
-            ) : (
-              <div />
-            )}
-          </div>
+              {userForm.role === "zone_leader" ? (
+                <div className="sm:col-span-2">
+                  <label className="text-sm font-semibold text-zinc-700">
+                    Zone (unassigned only)
+                  </label>
+                  <select
+                    value={userForm.zone_id}
+                    onChange={(e) => setUserForm((s) => ({ ...s, zone_id: e.target.value }))}
+                    className="mt-1 w-full min-h-12 rounded-2xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-900 shadow-sm outline-none focus:border-indigo-500"
+                  >
+                    <option value="">Select a zone</option>
+                    {d.zonesWithoutLeader.map((z) => (
+                      <option key={z.id} value={z.id}>
+                        {z.name ?? "Unnamed zone"}
+                      </option>
+                    ))}
+                  </select>
+                  {d.zonesWithoutLeader.length === 0 && (
+                    <p className="mt-1 text-xs text-amber-700">
+                      No zones without a leader. Add a zone or unassign a leader first.
+                    </p>
+                  )}
+                </div>
+              ) : null}
+            </div>
 
-          <button
-            type="button"
-            disabled={savingUser}
-            onClick={() => void addUser()}
-            className="inline-flex min-h-12 w-full items-center justify-center rounded-2xl bg-indigo-600 px-5 text-base font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:opacity-50"
-          >
-            {savingUser ? "Sending..." : "Send invite"}
-          </button>
-        </div>
+            <button
+              type="button"
+              disabled={savingUser}
+              onClick={() => void addUser()}
+              className="inline-flex min-h-12 w-full items-center justify-center rounded-2xl bg-indigo-600 px-5 text-base font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:opacity-50"
+            >
+              {savingUser ? "Creating..." : "Create user"}
+            </button>
+          </div>
+        )}
       </Modal>
     </div>
   );
